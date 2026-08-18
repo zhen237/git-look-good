@@ -11,7 +11,7 @@
   #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; background: #fff; border-bottom: 1px solid #e2e4e8; }
   #toolbar strong { font-size: 15px; }
   .mode-group button, #toolbar button, .filebtn { font: inherit; font-size: 13px; padding: 5px 10px; border: 1px solid #cbd2dc; background: #fff; border-radius: 7px; cursor: pointer; }
-  .mode-group button.active { background: #4E79A7; color: #fff; border-color: #4E79A7; }
+  .mode-group button.active, #toggleCluster.active { background: #4E79A7; color: #fff; border-color: #4E79A7; }
   #search { font: inherit; font-size: 13px; padding: 5px 9px; border: 1px solid #cbd2dc; border-radius: 7px; width: 200px; }
   .filebtn { display: inline-block; }
   #filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 14px; background: #fafbfc; border-bottom: 1px solid #eef0f3; font-size: 12px; color: #555; max-height: 118px; overflow-y: auto; flex-shrink: 0; }
@@ -88,6 +88,12 @@
   #canvasWrap::-webkit-scrollbar-thumb { background: #c2c9d4; border-radius: 6px; border: 2px solid #fff; }
   #canvasWrap::-webkit-scrollbar-thumb:hover { background: #a9b2c0; }
   #canvasWrap::-webkit-scrollbar-track { background: #f2f4f7; }
+  /* 聚合簇节点 */
+  .cluster-rect { stroke: rgba(0,0,0,0.22); stroke-width: 1.2; cursor: pointer; }
+  .cluster-label { font-size: 11px; fill: #fff; pointer-events: none; }
+  .cluster-halo { fill: none; stroke: #E8554E; stroke-width: 3; opacity: 0; pointer-events: none; }
+  .cluster:hover .cluster-halo { opacity: 1; }
+  .cluster-inner { opacity: 0.92; }
 </style>
 </head>
 <body>
@@ -100,6 +106,7 @@
     <button data-mode="C">作者→仓库</button>
     <button data-mode="D">时间线</button>
   </span>
+  <button id="toggleCluster" title="分支拓扑模式下，把同作者连续提交聚合成大节点（再点展开）">聚合</button>
   <button id="expandAll">展开全部</button>
   <button id="collapseAll">折叠全部</button>
   <input id="search" placeholder="搜索 提交/hash/作者">
@@ -179,6 +186,10 @@ let nodeMap = {};
 let nodeSeq = 0;
 let visible = [];
 let axisGran = 'month';
+let clusterMode = false;          // 分支拓扑模式下的作者-时间聚合
+let clusterWindowDays = 7;        // 同作者连续提交超过此天数则拆分为新簇
+let expandedClusters = new Set(); // 已展开查看详情的簇 id
+let clusterMap = {};              // 当前渲染的簇 id -> cluster
 
 // ===== 偏好持久化（localStorage）=====
 const LS = {
@@ -316,6 +327,7 @@ function buildLanes(){
   // 提交节点：x=时间序号，y=相对泳道(0 居中为主干)
   for (const c of data.commits){
     const x = STARTX + L.xRank[c.hash]*STEP, y = MAINY + L.rel[c.hash]*LANE_GAP;
+    c._xRank = L.xRank[c.hash];
     pos[c.hash] = {x,y};
     nodes.push({ id:'c'+c.hash, type:'commit', label:c.hash.slice(0,7), color:L.colorHex[c.hash], commit:c, _x:x, _y:y, parentHashes:c.parents.slice() });
   }
@@ -350,6 +362,73 @@ function buildLanes(){
   return { nodes, connectors, width: maxX+100, height: MAINY + (maxRel+1)*LANE_GAP + 60 };
 }
 
+// ===== 作者-时间聚合（应对大仓库：把同作者连续提交折叠成大节点）=====
+function buildClusterModel(baseModel){
+  const commitsByHash = {};
+  for (const n of baseModel.nodes){ if (n.type === 'commit' && n.commit) commitsByHash[n.commit.hash] = n; }
+  // 按 xRank（时间先后）排序
+  const commitNodes = Object.values(commitsByHash).slice().sort((a,b)=> (a.commit._xRank||0)-(b.commit._xRank||0));
+  if (!commitNodes.length) return baseModel;
+
+  const clusters = [];
+  let cur = null;
+  const MS_PER_DAY = 86400000;
+  function flush(){ if (cur && cur.nodes.length) clusters.push(cur); cur = null; }
+
+  for (const n of commitNodes){
+    const c = n.commit;
+    const isMerge = (c.parents || []).length > 1;
+    const t = new Date(c.time).getTime();
+    // 合并提交单独成簇（保持拓扑锚点可见）
+    if (isMerge){ flush(); clusters.push({ id:'cl'+(nodeSeq++), type:'cluster', nodes:[n], single:true, authorId:c.authorId, tStart:t, tEnd:t }); continue; }
+    if (!cur || cur.authorId !== c.authorId || (t - cur.tEnd) / MS_PER_DAY > clusterWindowDays){ flush(); cur = { id:'cl'+(nodeSeq++), type:'cluster', nodes:[], single:false, authorId:c.authorId, tStart:t, tEnd:t }; }
+    cur.nodes.push(n); cur.tEnd = Math.max(cur.tEnd, t);
+  }
+  flush();
+
+  // 簇 → 节点；展开簇直接渲染内部提交
+  const clusterMap = {}; // cluster.id -> cluster
+  const visibleCommitHash = new Set(); // 展开簇内的提交 hash
+  const newNodes = [];
+  for (const cl of clusters){
+    clusterMap[cl.id] = cl;
+    if (cl.single){
+      const n = cl.nodes[0];
+      newNodes.push(n);
+      continue;
+    }
+    if (expandedClusters.has(cl.id)){
+      // 展开：把内部提交按原位置渲染，并在左侧加一个簇标题节点
+      for (const n of cl.nodes) visibleCommitHash.add(n.commit.hash);
+      newNodes.push(...cl.nodes);
+    } else {
+      // 折叠：生成簇节点
+      const xs = cl.nodes.map(n=>n._x), ys = cl.nodes.map(n=>n._y);
+      const cx = xs.reduce((a,b)=>a+b,0)/xs.length;
+      const cy = ys.reduce((a,b)=>a+b,0)/ys.length;
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const count = cl.nodes.length;
+      const w = Math.max(40, Math.min(120, 18 + count*2 + (maxX-minX)*0.15));
+      const h = 28 + Math.min(14, Math.max(...ys)-Math.min(...ys))*0.08;
+      const author = findAuthor(cl.authorId);
+      const first = cl.nodes[0].commit, last = cl.nodes[cl.nodes.length-1].commit;
+      const fileSum = cl.nodes.reduce((s,n)=>s+(n.commit.filesChanged||0),0);
+      const addSum = cl.nodes.reduce((s,n)=>s+(n.commit.additions||0),0);
+      const delSum = cl.nodes.reduce((s,n)=>s+(n.commit.deletions||0),0);
+      const msgSample = cl.nodes.slice(0,5).map(n=>n.commit.message.split('\n')[0]).join('\n');
+      const tip = `作者 ${author ? author.name : cl.authorId}\n${count} 次提交 · ${first.time.slice(0,10)} ~ ${last.time.slice(0,10)}\n+${addSum} / -${delSum} · ${fileSum} 文件\n点击查看详情（展开分段）\n——\n${msgSample}`;
+      newNodes.push({ id:cl.id, type:'cluster', label:`${author ? author.name.split(' ')[0] : cl.authorId} ${count}`, color:author?author.color:'#888', _x:cx, _y:cy, _w:w, _h:h, cluster:cl, tip });
+    }
+  }
+
+  // 连线：只保留「仍可见节点」之间的父子关系
+  const keptHashes = new Set(visibleCommitHash);
+  for (const n of newNodes){ if (n.type === 'commit') keptHashes.add(n.commit.hash); }
+  const keptConnectors = baseModel.connectors.filter(cn => keptHashes.has(cn.toHash));
+
+  return { ...baseModel, nodes: newNodes, connectors: keptConnectors, clusterMap };
+}
+
 // 布局缓存：数据/模式不变时复用泳道布局（滚动、缩放、选中只重渲染不重算拓扑）
 let layoutCache = null, layoutCacheKey = '';
 function render(){
@@ -359,9 +438,11 @@ function render(){
       layoutCache = buildLanes(); layoutCacheKey = 'E'; layoutCache.data = data;
     }
     model = layoutCache;
+    if (clusterMode){ model = buildClusterModel(model); }
   } else {
     model = buildTreeModel();
   }
+  clusterMap = model.clusterMap || {};
   nodeMap = {}; model.nodes.forEach(n => nodeMap[n.id] = n);
   const { width, height, connectors, links } = model;
   // 选中提交时，高亮其祖先链路（仓库→主干→分支→该提交）
@@ -374,7 +455,7 @@ function render(){
 
   const { tmin, tmax } = getTimeRange();
   let axisSvg = '';
-  if (times.length){
+  if (tmin && tmax){
     const axY = 24;
     axisSvg += `<line class="axis" x1="20" y1="${axY}" x2="${width-20}" y2="${axY}"/>`;
     const d = new Date(tmin); d.setDate(1); d.setHours(0,0,0,0);
@@ -428,6 +509,13 @@ function render(){
     if (hlCommits && n.commit && !hlCommits.has(n.commit.hash) && n.type!=='repo') cls += ' dim';
     if (n.type==='branchlabel'){
       nodesSvg += `<text class="branch-label" x="${n._x}" y="${n._y}" text-anchor="${n._anchor||'end'}" fill="${n.color||'#6b7480'}">${escapeHtml(n.label)}</text>`;
+    } else if (n.type==='cluster'){
+      const w = n._w || 60, h = n._h || 30;
+      nodesSvg += `<g class="node cluster" data-nodeid="${n.id}">
+        <rect class="cluster-rect" x="${n._x-w/2}" y="${n._y-h/2}" width="${w}" height="${h}" rx="10" fill="${n.color}"/>
+        <circle class="cluster-halo" cx="${n._x}" cy="${n._y}" r="${Math.max(w,h)/2+6}"/>
+        <text class="cluster-label" x="${n._x}" y="${n._y+4}" text-anchor="middle">${escapeHtml(n.label)}</text>
+      </g>`;
     } else if (mode==='E' && n.type==='commit'){
       let s = `<g class="${cls}" data-nodeid="${n.id}"><circle cx="${n._x}" cy="${n._y}" r="11" fill="${n.color}" stroke="rgba(0,0,0,0.18)" stroke-width="0.6"/>`;
       if (isSel) s += `<circle cx="${n._x}" cy="${n._y}" r="17" fill="none" stroke="#E8554E" stroke-width="3"/>`;
@@ -498,12 +586,14 @@ function buildFilters(){
   document.querySelectorAll('#filters input').forEach(inp => inp.addEventListener('change', () => { const v=inp.value, kind=inp.dataset.kind; if (kind==='author'){ inp.checked?activeAuthors.add(v):activeAuthors.delete(v); } else { inp.checked?activeBranches.add(v):activeBranches.delete(v); } saveFilters(); render(); if (panelTab==='stats') showStats(); }));
 }
 
-document.getElementById('svg').addEventListener('click', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n) return; if (n.type==='commit') selectCommit(n.commit); else { n.collapsed=!n.collapsed; treeCache=null; render(); } });
+document.getElementById('svg').addEventListener('click', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n) return; if (n.type==='commit') selectCommit(n.commit); else if (n.type==='cluster'){ const cl = n.cluster; if (!cl) return; if (cl.single){ selectCommit(cl.nodes[0].commit); return; } if (expandedClusters.has(cl.id)){ expandedClusters.delete(cl.id); toast('已收起聚合'); } else { expandedClusters.add(cl.id); toast(`已展开：${cl.nodes.length} 次提交`); } render(); } else { n.collapsed=!n.collapsed; treeCache=null; render(); } });
 const tip = document.getElementById('tooltip');
 document.getElementById('svg').addEventListener('mouseover', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n||!n.tip) return; tip.textContent=n.tip; tip.style.opacity='1'; });
 document.getElementById('svg').addEventListener('mousemove', e => { tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; });
 document.getElementById('svg').addEventListener('mouseout', () => { tip.style.opacity='0'; });
 document.getElementById('modeGroup').addEventListener('click', e => { const b=e.target.closest('button[data-mode]'); if(!b) return; mode=b.dataset.mode; LS.set('mode', mode); document.querySelectorAll('#modeGroup button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); render(); toast('模式：'+b.textContent.trim()); });
+function syncClusterButton(){ const b=document.getElementById('toggleCluster'); if(b) b.classList.toggle('active', clusterMode); }
+document.getElementById('toggleCluster').addEventListener('click', () => { clusterMode = !clusterMode; expandedClusters.clear(); LS.set('clusterMode', clusterMode); render(); syncClusterButton(); toast(clusterMode ? '已开启聚合视图' : '已关闭聚合视图'); });
 function syncModeButtons(){ document.querySelectorAll('#modeGroup button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode)); }
 document.getElementById('expandAll').addEventListener('click', () => { setAllCollapsed(false); toast('已展开全部'); });
 document.getElementById('collapseAll').addEventListener('click', () => { setAllCollapsed(true); toast('已折叠全部'); });
@@ -720,7 +810,9 @@ if (data.repo && data.repo.sampled){
 }
 
 // ===== 初始化：恢复偏好 + 首屏视图 =====
+{ const cm = LS.get('clusterMode', null); if (typeof cm === 'boolean') clusterMode = cm; }
 syncModeButtons();
+syncClusterButton();
 applyPersistedFilters();
 showStats();
 render();
