@@ -287,33 +287,100 @@ function buildTreeModel(){
 
 // ===== 泳道(列)分配算法：移植自 tclh123/commits-graph（git 原生图算法）=====
 // 处理顺序 新→旧（子先于父）；维护活跃泳道，合并时关闭多余泳道并压缩；以默认分支为中线居中。
+// 新版：用 lane 回收 + 最大 lane 数上限，避免 express 这类高星仓库出现 6000+ 泳道、画布高度 40 万像素的不可读情况。
 const LANE_PALETTE = ['#4E79A7','#F28E2B','#59A14F','#E15759','#B07AA1','#76B7B2','#EDC948','#FF9DA7','#9c755f','#bab0ac'];
+const MAX_LANES = 120; // 超过时把最老的泳道压缩到归档区（仍保留连线）
 function computeLanes(commits, defaultBranch){
   const isTrunk = c => (c.branches||[]).includes(defaultBranch);
-  // 新→旧；同时间戳时主干(default branch)优先，使其占据中线 lane 0（分叉点主干即中枢）
   const sorted = commits.slice().sort((a,b)=>{
     if (a.time !== b.time) return a.time < b.time ? 1 : -1;
     return (isTrunk(b)?1:0) - (isTrunk(a)?1:0);
   });
-  const laneHash = [], laneColor = [], absLane = {}, commitColor = {};
-  const laneIndexOf = new Map();   // hash -> 稳定泳道 id（不再做数组压缩，消除 O(n^2)）
-  let colorSeq = 0;
-  for (const c of sorted){
-    let col = laneIndexOf.get(c.hash);
-    if (col === undefined){ col = laneHash.length; laneHash.push(c.hash); laneColor.push(colorSeq++); laneIndexOf.set(c.hash, col); }
-    commitColor[c.hash] = LANE_PALETTE[laneColor[col] % LANE_PALETTE.length];
-    absLane[c.hash] = col;
-    const ps = c.parents || [];
-    if (ps.length === 0){ laneHash[col] = null; }
-    else if (ps.length === 1){ laneHash[col] = ps[0]; }
-    else { laneHash[col] = ps[0]; for (let i=1;i<ps.length;i++){ const pc = laneIndexOf.get(ps[i]); if (pc!==undefined && pc!==col) laneHash[pc] = null; } }
+  const laneMap = {}; // laneId -> currentHash or null
+  const laneOfHash = {}; // hash -> [laneIds]（允许多个 lane 指向同一 hash）
+  const freeIds = []; // 可回收的 laneId（每次 pop 最小）
+  let nextId = 0;
+  function allocLane(hash){
+    let id;
+    if (freeIds.length){ freeIds.sort((a,b)=>a-b); id = freeIds.shift(); }
+    else { id = nextId++; }
+    laneMap[id] = hash;
+    (laneOfHash[hash] = laneOfHash[hash] || []).push(id);
+    return id;
   }
-  let center = 0;
-  const defHeads = commits.filter(c=> (c.branches||[]).includes(defaultBranch)).sort((a,b)=>(a.time<b.time?1:-1));
-  if (defHeads.length) center = absLane[defHeads[0].hash];
+  function releaseLane(id){
+    const oldHash = laneMap[id];
+    laneMap[id] = null;
+    if (oldHash){
+      const arr = laneOfHash[oldHash] || [];
+      const idx = arr.indexOf(id);
+      if (idx !== -1) arr.splice(idx, 1);
+    }
+    freeIds.push(id);
+  }
+  function takeFirst(hash){
+    const arr = laneOfHash[hash] || [];
+    return arr.length ? arr[0] : undefined;
+  }
+  // 处理每个提交，按 git graph 规则移动/合并/释放泳道
+  for (const c of sorted){
+    let col = takeFirst(c.hash);
+    if (col === undefined) col = allocLane(c.hash);
+    const ps = c.parents || [];
+    if (ps.length === 0){ releaseLane(col); }
+    else if (ps.length === 1){
+      const oldHash = laneMap[col];
+      if (oldHash){ const arr = laneOfHash[oldHash] || []; const idx = arr.indexOf(col); if (idx !== -1) arr.splice(idx, 1); }
+      laneMap[col] = ps[0];
+      (laneOfHash[ps[0]] = laneOfHash[ps[0]] || []).push(col);
+    } else {
+      const oldHash = laneMap[col];
+      if (oldHash){ const arr = laneOfHash[oldHash] || []; const idx = arr.indexOf(col); if (idx !== -1) arr.splice(idx, 1); }
+      laneMap[col] = ps[0];
+      (laneOfHash[ps[0]] = laneOfHash[ps[0]] || []).push(col);
+      for (let i=1;i<ps.length;i++){
+        const pc = takeFirst(ps[i]);
+        if (pc !== undefined && pc !== col) releaseLane(pc);
+      }
+    }
+  }
+  // 若活跃泳道仍超过上限，把最老的 commit 所在泳道释放（归到归档位置 MAX_LANES）
   const asc = commits.slice().sort((a,b)=>(a.time<b.time?-1:(a.time>b.time?1:0)));
   const xRank = {}; asc.forEach((c,i)=> xRank[c.hash]=i);
-  const rel = {}; for (const c of commits) rel[c.hash] = absLane[c.hash] - center;
+  let archivedCount = 0;
+  const archivedHashes = new Set();
+  while (Object.values(laneMap).filter(h => h !== null).length > MAX_LANES && archivedCount < commits.length){
+    // 找 xRank 最小的活跃 lane 释放
+    let oldestHash = null, oldestId = -1, oldestRank = Infinity;
+    for (const id in laneMap){
+      const h = laneMap[id];
+      if (!h) continue;
+      const r = xRank[h] !== undefined ? xRank[h] : Infinity;
+      if (r < oldestRank){ oldestRank = r; oldestHash = h; oldestId = Number(id); }
+    }
+    if (oldestId === -1) break;
+    releaseLane(oldestId);
+    archivedHashes.add(oldestHash);
+    archivedCount++;
+  }
+  // 居中：默认分支最新头提交所在泳道
+  const defHeads = commits.filter(c=> (c.branches||[]).includes(defaultBranch)).sort((a,b)=>(a.time<b.time?1:-1));
+  const center = defHeads.length ? (takeFirst(defHeads[0].hash) || 0) : 0;
+  const absLane = {}, commitColor = {}, rel = {};
+  for (const c of commits){
+    const h = c.hash;
+    const l = takeFirst(h);
+    if (l === undefined){
+      // 被归档的 hash 没有活跃 lane，放到归档区（center 下方固定位置）
+      absLane[h] = MAX_LANES;
+      commitColor[h] = '#9c755f';
+      rel[h] = MAX_LANES - center;
+    } else {
+      absLane[h] = l;
+      commitColor[h] = LANE_PALETTE[l % LANE_PALETTE.length];
+      rel[h] = l - center;
+    }
+  }
   return { absLane, rel, xRank, colorHex: commitColor, center };
 }
 
@@ -681,20 +748,30 @@ function applyZoom(s){
 function applyInitialView(){
   const wrap = document.getElementById('canvasWrap');
   const s = LS.get('scale', null);
+  const largeRepo = (data.commits && data.commits.length > 1500);
   if (typeof s === 'number' && s > 0){ applyZoom(s); }
-  else { applyZoom(0.6); }   // 默认 60%，避免超大图谱被缩成一条线看不清
-  // 首屏定位到「最新提交」：分支拓扑模式最新在右侧，树模式在最上方
+  else if (largeRepo){ zoomFit(); } // 大仓库先 fit，确保节点在视口内
+  else { applyZoom(0.6); }
+  // 首屏定位到「最新提交」：分支拓扑模式最新在右侧并居中，树模式在最上方
   if (wrap){
-    if (mode === 'E'){ wrap.scrollLeft = wrap.scrollWidth; }
-    else { wrap.scrollTop = 0; }
+    if (mode === 'E'){
+      // 滚到最右侧，但让最新区域位于视口中间偏左（避免贴边）
+      wrap.scrollLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth / 2);
+    } else {
+      wrap.scrollTop = 0;
+    }
   }
 }
 function zoomFit(){
   if (!currentModel){ applyZoom(1); return; }
   const wrap = document.getElementById('canvasWrap');
   const cw = (wrap.clientWidth || 0) - 40, ch = (wrap.clientHeight || 0) - 60;
-  const s = Math.max(0.15, Math.min(1, Math.min(cw/currentModel.width, ch/currentModel.height)));
+  const s = Math.max(0.2, Math.min(1, Math.min(cw/currentModel.width, ch/currentModel.height)));
   applyZoom(isFinite(s) && s > 0 ? s : 1);
+  // fit 后把最新提交居中在视口
+  if (wrap && mode === 'E'){
+    wrap.scrollLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth / 2);
+  }
 }
 document.getElementById('zoomIn').addEventListener('click', () => applyZoom(zoomState.scale * 1.25));
 document.getElementById('zoomOut').addEventListener('click', () => applyZoom(zoomState.scale / 1.25));
@@ -811,6 +888,11 @@ if (data.repo && data.repo.sampled){
 
 // ===== 初始化：恢复偏好 + 首屏视图 =====
 { const cm = LS.get('clusterMode', null); if (typeof cm === 'boolean') clusterMode = cm; }
+// 大仓库自动开启聚合，避免 6000+ 提交把泳道撑爆
+if (data.commits && data.commits.length > 1500 && LS.get('clusterMode', null) === null){
+  clusterMode = true;
+  clusterWindowDays = 30;
+}
 syncModeButtons();
 syncClusterButton();
 applyPersistedFilters();
