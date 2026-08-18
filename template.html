@@ -427,7 +427,7 @@ function buildLanes(){
   }
   let maxX = STARTX + (data.commits.length-1)*STEP;
   let maxRel = 0; for (const c of data.commits) maxRel = Math.max(maxRel, Math.abs(L.rel[c.hash]));
-  return { nodes, connectors, width: maxX+100, height: MAINY + (maxRel+1)*LANE_GAP + 60 };
+  return { nodes, connectors, width: maxX+100, height: Math.max(MAINY + (maxRel+1)*LANE_GAP + 60, 480) };
 }
 
 // ===== 模式 E：按分支分泳道（复用 git 拓扑泳道 computeLanes，但 x 轴改按时间对齐，分叉/合入线变短）=====
@@ -473,7 +473,7 @@ function buildBranchLanes(){
     nodes.push({ id:'bl'+(labelSeq++), type:'branchlabel', label:shortName, color:L.colorHex[hh], _x:hp.x + k*100, _y:hp.y - 26, _anchor:'middle', tip:`分支 ${b.name}\n头提交 ${hh.slice(0,7)}` });
   }
   const width = STARTX + (n-1)*STEP + 120;
-  const height = TOP + (maxRel+1)*LANE_GAP + 40;
+  const height = Math.max(TOP + (maxRel+1)*LANE_GAP + 40, 480);
   return { nodes, connectors, width, height };
 }
 
@@ -953,7 +953,10 @@ function zoomFit(){
   const cw = (wrap.clientWidth || 0) - 40, ch = (wrap.clientHeight || 0) - 60;
   // 大仓库 width 可达数十万，fit 后 scale 会极小；限制最小 0.08 保证文字可读
   const s = Math.max(0.08, Math.min(1, Math.min(cw/currentModel.width, ch/currentModel.height)));
-  applyZoom(isFinite(s) && s > 0 ? s : 1);
+  // 单/少泳道仓库（如 xind2 FF 合并后只剩 main 一条线）模型高度极小，fit 后 SVG 高度可能只有 40 像素、
+  // canvasWrap 容器却 500+ 像素，SVG 居中后上下大量空白让人误以为"没显示"。强制 zoom 不低于 0.5 让节点密度可读。
+  const finalScale = isFinite(s) && s > 0 ? Math.max(0.5, s) : 0.5;
+  applyZoom(finalScale);
   // fit 后把最新提交居中在视口
   if (wrap && mode === 'E'){
     setTimeout(() => { wrap.scrollLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth / 2); }, 0);
