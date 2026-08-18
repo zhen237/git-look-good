@@ -22,10 +22,22 @@
   #search:focus { outline: none; border-color: #4E79A7; box-shadow: 0 0 0 2px rgba(78,121,167,.15); }
   #search { font: inherit; font-size: 13px; padding: 5px 9px; border: 1px solid #cbd2dc; border-radius: 7px; width: 200px; }
   .filebtn { display: inline-block; }
-  #filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 14px; background: #fafbfc; border-bottom: 1px solid #eef0f3; font-size: 12px; color: #555; max-height: 118px; overflow-y: auto; flex-shrink: 0; }
-  #filters label { margin-right: 3px; display: inline-flex; align-items: center; gap: 3px; padding: 1px 5px; border-radius: 4px; background: #f0f2f5; cursor: pointer; white-space: nowrap; }
-  #filters label:hover { background: #e5e9ef; }
-  #filters input[type=checkbox] { margin: 0; }
+  #filters { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 14px; padding: 8px 14px; background: #fafbfc; border-bottom: 1px solid #eef0f3; font-size: 12px; color: #555; flex-shrink: 0; }
+  .filter-group { position: relative; }
+  .filter-toggle { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid #cbd2dc; background: #fff; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .filter-toggle:hover { background: #f5f7fa; border-color: #4E79A7; }
+  .filter-toggle.open { background: #eef2f7; border-color: #4E79A7; }
+  .filter-menu { display: none; position: absolute; top: 28px; left: 0; z-index: 12; background: #fff; border: 1px solid #dbe0e7; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); min-width: 220px; max-width: 340px; max-height: 320px; overflow-y: auto; padding: 8px; }
+  .filter-menu.open { display: block; }
+  .filter-menu-header { display: flex; justify-content: space-between; align-items: center; padding: 2px 4px 6px; border-bottom: 1px solid #eef0f3; margin-bottom: 6px; }
+  .filter-menu-header label { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+  .filter-more { color: #4E79A7; cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 4px; }
+  .filter-more:hover { background: #eef2f7; }
+  .filter-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .filter-chips label { display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 4px; background: #f0f2f5; cursor: pointer; white-space: nowrap; font-size: 11px; }
+  .filter-chips label:hover { background: #e5e9ef; }
+  .filter-chips input[type=checkbox] { margin: 0; }
+  .filter-chips .folded { display: none; }
   #main { display: flex; flex: 1; min-height: 0; }
   #canvasWrap { flex: 1; overflow: auto; position: relative; background: #fff; }
   #svg { display: block; }
@@ -142,8 +154,20 @@
   <button id="btnHelp" title="快捷键与操作说明">?</button>
 </div>
 <div id="filters">
-  <span>作者:</span><span id="authorFilters"></span>
-  <span>分支:</span><span id="branchFilters"></span>
+  <div class="filter-group">
+    <button class="filter-toggle" id="authorToggle">作者 <span id="authorCount">0/0</span> ▼</button>
+    <div class="filter-menu" id="authorMenu">
+      <div class="filter-menu-header"><label><input type="checkbox" id="authorAll" checked> 全选</label><span class="filter-more" id="authorMore">+ 展开更多</span></div>
+      <div class="filter-chips" id="authorFilters"></div>
+    </div>
+  </div>
+  <div class="filter-group">
+    <button class="filter-toggle" id="branchToggle">分支 <span id="branchCount">0/0</span> ▼</button>
+    <div class="filter-menu" id="branchMenu">
+      <div class="filter-menu-header"><label><input type="checkbox" id="branchAll" checked> 全选</label><span class="filter-more" id="branchMore">+ 展开更多</span></div>
+      <div class="filter-chips" id="branchFilters"></div>
+    </div>
+  </div>
 </div>
 <div id="main">
   <div id="canvasWrap"><svg id="svg"></svg></div>
@@ -396,7 +420,12 @@ function computeLanes(commits, defaultBranch){
 function buildLanes(){
   const main = data.repo.defaultBranch || (data.repo.branches[0] && data.repo.branches[0].name);
   const L = computeLanes(data.commits, main);
-  const STEP = 78, STARTX = 140, MAINY = 220, LANE_GAP = 64, R = 11;
+  // 大仓库动态紧凑布局：提交越多，单个节点横向/纵向间距越小，避免图被拉成细长条
+  const n = data.commits.length || 1;
+  const compact = n > 3000 ? 0.28 : (n > 1500 ? 0.45 : (n > 600 ? 0.7 : 1));
+  const STEP = Math.max(18, Math.round(78 * compact));
+  const LANE_GAP = Math.max(34, Math.round(64 * compact));
+  const STARTX = 140, MAINY = 220, R = 11;
   const nodes = []; const connectors = [];
   const pos = {};
   // 提交节点：x=时间序号，y=相对泳道(0 居中为主干)
@@ -688,14 +717,44 @@ function renderDetail(c){
   document.getElementById('panelContent').style.display = 'block';
 }
 
-function buildFilters(){
+const FILTER_TOP_N = 20;
+let authorExpanded = false, branchExpanded = false;
+
+function updateFilterCounts(){
+  const atot = data.authors.length, btot = (data.repo.branches||[]).length;
+  document.getElementById('authorCount').textContent = activeAuthors.size + '/' + atot;
+  document.getElementById('branchCount').textContent = activeBranches.size + '/' + btot;
+}
+function renderFilterList(){
   const af = document.getElementById('authorFilters'); const bf = document.getElementById('branchFilters');
   af.innerHTML=''; bf.innerHTML='';
+  // 作者按提交数排序
+  const authorRank = data.authors.slice().sort((a,b)=> b.commitCount - a.commitCount);
+  authorRank.forEach((a, i) => { const lab=document.createElement('label'); lab.className = (i >= FILTER_TOP_N && !authorExpanded) ? 'folded' : ''; lab.innerHTML=`<input type="checkbox" ${activeAuthors.has(a.id)?'checked':''} data-kind="author" value="${a.id}"> ${escapeHtml(a.name)}`; af.appendChild(lab); });
+  (data.repo.branches||[]).forEach((b, i) => { const lab=document.createElement('label'); lab.className = (i >= FILTER_TOP_N && !branchExpanded) ? 'folded' : ''; lab.innerHTML=`<input type="checkbox" ${activeBranches.has(b.name)?'checked':''} data-kind="branch" value="${b.name}"> ${escapeHtml(b.name)}`; bf.appendChild(lab); });
+  document.getElementById('authorMore').textContent = authorExpanded ? '− 收起' : (`+ 展开更多 (${Math.max(0, authorRank.length - FILTER_TOP_N)})`);
+  document.getElementById('branchMore').textContent = branchExpanded ? '− 收起' : (`+ 展开更多 (${Math.max(0, (data.repo.branches||[]).length - FILTER_TOP_N)})`);
+  document.getElementById('authorMore').style.display = authorRank.length > FILTER_TOP_N ? '' : 'none';
+  document.getElementById('branchMore').style.display = (data.repo.branches||[]).length > FILTER_TOP_N ? '' : 'none';
+  bindFilterInputs();
+}
+function buildFilters(){
   activeAuthors = new Set(data.authors.map(a=>a.id));
   activeBranches = new Set((data.repo.branches||[]).map(b=>b.name));
-  data.authors.forEach(a => { const lab=document.createElement('label'); lab.innerHTML=`<input type="checkbox" checked data-kind="author" value="${a.id}"> ${escapeHtml(a.name)}`; af.appendChild(lab); });
-  (data.repo.branches||[]).forEach(b => { const lab=document.createElement('label'); lab.innerHTML=`<input type="checkbox" checked data-kind="branch" value="${b.name}"> ${escapeHtml(b.name)}`; bf.appendChild(lab); });
-  document.querySelectorAll('#filters input').forEach(inp => inp.addEventListener('change', () => { const v=inp.value, kind=inp.dataset.kind; if (kind==='author'){ inp.checked?activeAuthors.add(v):activeAuthors.delete(v); } else { inp.checked?activeBranches.add(v):activeBranches.delete(v); } saveFilters(); render(); if (panelTab==='stats') showStats(); }));
+  authorExpanded = false; branchExpanded = false;
+  applyPersistedFilters();
+  renderFilterList();
+  updateFilterCounts();
+}
+function bindFilterInputs(){
+  document.querySelectorAll('#authorFilters input, #branchFilters input').forEach(inp => {
+    inp.onchange = () => {
+      const v=inp.value, kind=inp.dataset.kind;
+      if (kind==='author'){ inp.checked?activeAuthors.add(v):activeAuthors.delete(v); }
+      else { inp.checked?activeBranches.add(v):activeBranches.delete(v); }
+      updateFilterCounts(); saveFilters(); render(); if (panelTab==='stats') showStats();
+    };
+  });
 }
 
 document.getElementById('svg').addEventListener('click', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n) return; if (n.type==='commit') selectCommit(n.commit); else if (n.type==='cluster'){ const cl = n.cluster; if (!cl) return; if (cl.single){ selectCommit(cl.nodes[0].commit); return; } if (expandedClusters.has(cl.id)){ expandedClusters.delete(cl.id); toast('已收起聚合'); } else { expandedClusters.add(cl.id); toast(`已展开：${cl.nodes.length} 次提交`); } render(); } else { n.collapsed=!n.collapsed; treeCache=null; render(); } });
@@ -717,15 +776,44 @@ document.getElementById('fileInput').addEventListener('change', e => { const f=e
 let panelTab = 'stats';
 function visibleCommits(){ return data.commits.filter(commitPasses); }
 function syncFilterChecks(){
-  document.querySelectorAll('#filters input').forEach(inp => { inp.checked = (inp.dataset.kind==='author') ? activeAuthors.has(inp.value) : activeBranches.has(inp.value); });
+  renderFilterList();
+  updateFilterCounts();
 }
 function saveFilters(){ LS.set('authors', [...activeAuthors]); LS.set('branches', [...activeBranches]); }
 function applyPersistedFilters(){
   const sa = LS.get('authors', null), sb = LS.get('branches', null);
   if (Array.isArray(sa)){ const set = new Set(sa); activeAuthors = new Set([...activeAuthors].filter(x => set.has(x))); }
   if (Array.isArray(sb)){ const set = new Set(sb); activeBranches = new Set([...activeBranches].filter(x => set.has(x))); }
-  syncFilterChecks();
 }
+function toggleFilterMenu(kind){
+  const menu = document.getElementById(kind + 'Menu');
+  const btn = document.getElementById(kind + 'Toggle');
+  const otherKind = kind === 'author' ? 'branch' : 'author';
+  document.getElementById(otherKind + 'Menu').classList.remove('open');
+  document.getElementById(otherKind + 'Toggle').classList.remove('open');
+  menu.classList.toggle('open');
+  btn.classList.toggle('open');
+}
+function closeFilterMenus(){
+  document.querySelectorAll('.filter-menu').forEach(m => m.classList.remove('open'));
+  document.querySelectorAll('.filter-toggle').forEach(b => b.classList.remove('open'));
+}
+document.getElementById('authorToggle').addEventListener('click', e => { e.stopPropagation(); toggleFilterMenu('author'); });
+document.getElementById('branchToggle').addEventListener('click', e => { e.stopPropagation(); toggleFilterMenu('branch'); });
+document.getElementById('authorAll').addEventListener('change', e => {
+  const checked = e.target.checked;
+  data.authors.forEach(a => { if (checked) activeAuthors.add(a.id); else activeAuthors.delete(a.id); });
+  renderFilterList(); updateFilterCounts(); saveFilters(); render(); if (panelTab === 'stats') showStats();
+});
+document.getElementById('branchAll').addEventListener('change', e => {
+  const checked = e.target.checked;
+  (data.repo.branches||[]).forEach(b => { if (checked) activeBranches.add(b.name); else activeBranches.delete(b.name); });
+  renderFilterList(); updateFilterCounts(); saveFilters(); render(); if (panelTab === 'stats') showStats();
+});
+document.getElementById('authorMore').addEventListener('click', () => { authorExpanded = !authorExpanded; renderFilterList(); });
+document.getElementById('branchMore').addEventListener('click', () => { branchExpanded = !branchExpanded; renderFilterList(); });
+document.addEventListener('click', e => { if (!e.target.closest('.filter-group')) closeFilterMenus(); });
+
 function showStats(){
   panelTab = 'stats';
   document.querySelectorAll('#panelTabs button').forEach(b => b.classList.toggle('active', b.dataset.tab==='stats'));
@@ -735,13 +823,21 @@ function showStats(){
   for (const c of commits){ (amap[c.authorId] = amap[c.authorId] || []).push(c); }
   const ranks = Object.keys(amap).map(aid => ({ aid, name: authorName(aid), color: authorColor(aid), n: amap[aid].length })).sort((a,b)=> b.n - a.n);
   const maxN = ranks.length ? ranks[0].n : 1;
-  const rankHtml = ranks.map(r => `
+  const TOP_N = 20;
+  const top = ranks.slice(0, TOP_N);
+  const rest = ranks.slice(TOP_N);
+  const rankRowHtml = r => `
     <div class="rank-row" data-aid="${escapeHtml(r.aid)}" title="点击切换该作者筛选">
       <span class="rank-dot" style="background:${r.color}"></span>
       <span class="rank-name">${escapeHtml(r.name)}</span>
       <span class="rank-track"><span class="rank-fill" style="width:${(r.n/maxN*100).toFixed(1)}%;background:${r.color}"></span></span>
       <span class="rank-count">${r.n} 次</span>
-    </div>`).join('');
+    </div>`;
+  let rankHtml = top.map(rankRowHtml).join('');
+  if (rest.length){
+    rankHtml += `<div class="rank-row rank-more" id="statsRankMore" style="justify-content:center;color:#4E79A7;font-weight:600">展开其余 ${rest.length} 位作者 ▼</div>`;
+    rankHtml += `<div id="statsRankRest" style="display:none">${rest.map(rankRowHtml).join('')}</div>`;
+  }
   // 活跃热力：近 26 周按天
   const dayMap = {};
   for (const c of commits){ const t = new Date(c.time); if (isNaN(t)) continue; dayMap[t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0')] = (dayMap[t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0')]||0)+1; }
@@ -776,8 +872,20 @@ function showDetail(){
 }
 document.getElementById('panelTabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (!b) return; b.dataset.tab === 'stats' ? showStats() : showDetail(); });
 document.getElementById('panelContent').addEventListener('click', e => {
+  const more = e.target.closest('.rank-more');
+  if (more){
+    const rest = document.getElementById('statsRankRest');
+    if (!rest) return;
+    const open = rest.style.display === 'none';
+    rest.style.display = open ? 'block' : 'none';
+    more.textContent = open ? '收起其余作者 ▲' : more.textContent.replace(' ▲',' ▼').replace(/展开.*$/,'') || '展开其余作者 ▼';
+    // 重新生成文字：根据当前 rest 里行数
+    const count = rest.querySelectorAll('.rank-row').length;
+    if (!open) more.textContent = `展开其余 ${count} 位作者 ▼`;
+    return;
+  }
   const row = e.target.closest('.rank-row'); if (!row) return;
-  const aid = row.dataset.aid;
+  const aid = row.dataset.aid; if (!aid) return;
   if (activeAuthors.has(aid)) activeAuthors.delete(aid); else activeAuthors.add(aid);
   syncFilterChecks(); saveFilters(); render(); showStats();
 });
@@ -954,10 +1062,10 @@ if (data.repo && data.repo.sampled){
 
 // ===== 初始化：恢复偏好 + 首屏视图 =====
 { const cm = LS.get('clusterMode', null); if (typeof cm === 'boolean') clusterMode = cm; }
-// 大仓库自动开启聚合，避免 6000+ 提交把泳道撑爆
+// 大仓库自动开启聚合，避免 6000+ 提交把泳道撑爆；窗口按提交密度动态调整
 if (data.commits && data.commits.length > 1500 && LS.get('clusterMode', null) === null){
   clusterMode = true;
-  clusterWindowDays = 30;
+  clusterWindowDays = Math.max(30, Math.min(180, Math.round(data.commits.length / 50)));
 }
 // 时间跨度很大时默认按年显示，避免刻度标签重叠
 if (LS.get('axisGran', null) === null){
