@@ -41,6 +41,7 @@
   .axis-label { font-size: 10px; fill: #98a0ad; }
   .axis-marker { fill: #E8554E; }
   #tooltip { position: fixed; pointer-events: none; background: #222; color: #fff; font-size: 12px; padding: 6px 9px; border-radius: 6px; opacity: 0; transition: opacity .1s; max-width: 320px; z-index: 10; white-space: pre-line; line-height: 1.5; }
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #222; color: #fff; font-size: 13px; padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; z-index: 30; pointer-events: none; max-width: 80vw; }
   .chip { display: inline-block; padding: 2px 8px; border-radius: 10px; color: #fff; font-size: 12px; }
   .tag { display:inline-block; background:#eef1f5; color:#556; border-radius:5px; padding:1px 7px; font-size:11px; margin:2px 3px 2px 0; }
   .file-row { display:flex; justify-content:space-between; gap:8px; font-size:12px; padding:3px 0; border-bottom:1px dashed #eef0f3; }
@@ -141,6 +142,7 @@
   </div>
 </div>
 <div id="tooltip"></div>
+<div id="toast"></div>
 <div id="sampledBanner" style="display:none; position:fixed; top:66px; left:50%; transform:translateX(-50%); background:#fff4e5; border:1px solid #f0c896; color:#8a5a1e; padding:6px 12px; border-radius:8px; font-size:12px; z-index:15;"></div>
 <div id="helpOverlay" style="display:none; position:fixed; inset:0; background:rgba(20,24,30,.45); z-index:20; align-items:center; justify-content:center;">
   <div style="background:#fff; border-radius:12px; padding:22px 26px; max-width:480px; width:90%; box-shadow:0 10px 40px rgba(0,0,0,.25);">
@@ -282,18 +284,18 @@ function computeLanes(commits, defaultBranch){
     if (a.time !== b.time) return a.time < b.time ? 1 : -1;
     return (isTrunk(b)?1:0) - (isTrunk(a)?1:0);
   });
-  const laneSha = [], laneColor = [], absLane = {}, commitColor = {};
+  const laneHash = [], laneColor = [], absLane = {}, commitColor = {};
+  const laneIndexOf = new Map();   // hash -> 稳定泳道 id（不再做数组压缩，消除 O(n^2)）
   let colorSeq = 0;
   for (const c of sorted){
-    let col = laneSha.indexOf(c.hash);
-    if (col === -1){ col = laneSha.length; laneSha.push(c.hash); laneColor.push(colorSeq++); }
+    let col = laneIndexOf.get(c.hash);
+    if (col === undefined){ col = laneHash.length; laneHash.push(c.hash); laneColor.push(colorSeq++); laneIndexOf.set(c.hash, col); }
     commitColor[c.hash] = LANE_PALETTE[laneColor[col] % LANE_PALETTE.length];
     absLane[c.hash] = col;
     const ps = c.parents || [];
-    if (ps.length === 0){ laneSha[col] = null; }
-    else if (ps.length === 1){ laneSha[col] = ps[0]; }
-    else { laneSha[col] = ps[0]; for (let i=1;i<ps.length;i++){ const pc = laneSha.indexOf(ps[i]); if (pc!==-1 && pc!==col) laneSha[pc] = null; } }
-    for (let i=laneSha.length-1;i>=0;i--){ if (laneSha[i]===null){ laneSha.splice(i,1); laneColor.splice(i,1); } }
+    if (ps.length === 0){ laneHash[col] = null; }
+    else if (ps.length === 1){ laneHash[col] = ps[0]; }
+    else { laneHash[col] = ps[0]; for (let i=1;i<ps.length;i++){ const pc = laneIndexOf.get(ps[i]); if (pc!==undefined && pc!==col) laneHash[pc] = null; } }
   }
   let center = 0;
   const defHeads = commits.filter(c=> (c.branches||[]).includes(defaultBranch)).sort((a,b)=>(a.time<b.time?1:-1));
@@ -370,8 +372,7 @@ function render(){
     while (stack.length){ const n = stack.pop(); if (!n || !n.commit || hlCommits.has(n.commit.hash)) continue; hlCommits.add(n.commit.hash); for (const ph of n.parentHashes){ if (nbh[ph]) stack.push(nbh[ph]); } }
   }
 
-  const times = data.commits.map(c => new Date(c.time).getTime()).filter(t => !isNaN(t));
-  const tmin = Math.min(...times), tmax = Math.max(...times);
+  const { tmin, tmax } = getTimeRange();
   let axisSvg = '';
   if (times.length){
     const axY = 24;
@@ -448,6 +449,20 @@ function render(){
 
 function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+// 轻量操作提示（按钮反馈）
+let _toastTimer = null;
+function toast(msg){ const t = document.getElementById('toast'); if (!t) return; t.textContent = msg; t.style.opacity = '1'; if (_toastTimer) clearTimeout(_toastTimer); _toastTimer = setTimeout(() => { t.style.opacity = '0'; }, 1700); }
+
+// 时间范围缓存：避免每次滚动都解析全部提交时间（大仓库可省数千次 Date 构造）
+let _timeRange = null, _timeRangeData = null;
+function getTimeRange(){
+  if (_timeRange && _timeRangeData === data) return _timeRange;
+  const times = data.commits.map(c => new Date(c.time).getTime()).filter(t => !isNaN(t));
+  _timeRange = { tmin: Math.min.apply(null, times), tmax: Math.max.apply(null, times) };
+  _timeRangeData = data;
+  return _timeRange;
+}
+
 function selectCommit(c){
   selectedHash = c.hash;
   showDetail();
@@ -488,10 +503,10 @@ const tip = document.getElementById('tooltip');
 document.getElementById('svg').addEventListener('mouseover', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n||!n.tip) return; tip.textContent=n.tip; tip.style.opacity='1'; });
 document.getElementById('svg').addEventListener('mousemove', e => { tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; });
 document.getElementById('svg').addEventListener('mouseout', () => { tip.style.opacity='0'; });
-document.getElementById('modeGroup').addEventListener('click', e => { const b=e.target.closest('button[data-mode]'); if(!b) return; mode=b.dataset.mode; LS.set('mode', mode); document.querySelectorAll('#modeGroup button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); render(); });
+document.getElementById('modeGroup').addEventListener('click', e => { const b=e.target.closest('button[data-mode]'); if(!b) return; mode=b.dataset.mode; LS.set('mode', mode); document.querySelectorAll('#modeGroup button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); render(); toast('模式：'+b.textContent.trim()); });
 function syncModeButtons(){ document.querySelectorAll('#modeGroup button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode)); }
-document.getElementById('expandAll').addEventListener('click', () => setAllCollapsed(false));
-document.getElementById('collapseAll').addEventListener('click', () => setAllCollapsed(true));
+document.getElementById('expandAll').addEventListener('click', () => { setAllCollapsed(false); toast('已展开全部'); });
+document.getElementById('collapseAll').addEventListener('click', () => { setAllCollapsed(true); toast('已折叠全部'); });
 function setAllCollapsed(v){ visible.forEach(n => { if (n.children && n.children.length) n.collapsed = v; }); treeCache=null; render(); }
 document.getElementById('search').addEventListener('input', e => { searchTerm = e.target.value.trim().toLowerCase(); render(); });
 document.getElementById('fileInput').addEventListener('change', e => { const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ try { data=JSON.parse(r.result); selectedHash=null; buildFilters(); showStats(); render(); } catch(err){ alert('解析失败: '+err.message); } }; r.readAsText(f); });
@@ -574,8 +589,15 @@ function applyZoom(s){
   render();
 }
 function applyInitialView(){
+  const wrap = document.getElementById('canvasWrap');
   const s = LS.get('scale', null);
-  if (typeof s === 'number' && s > 0) applyZoom(s); else zoomFit();
+  if (typeof s === 'number' && s > 0){ applyZoom(s); }
+  else { applyZoom(0.6); }   // 默认 60%，避免超大图谱被缩成一条线看不清
+  // 首屏定位到「最新提交」：分支拓扑模式最新在右侧，树模式在最上方
+  if (wrap){
+    if (mode === 'E'){ wrap.scrollLeft = wrap.scrollWidth; }
+    else { wrap.scrollTop = 0; }
+  }
 }
 function zoomFit(){
   if (!currentModel){ applyZoom(1); return; }
@@ -648,14 +670,15 @@ function buildSvgString(){
   clone.setAttribute('viewBox', '0 0 ' + currentModel.width + ' ' + currentModel.height);
   return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
 }
-function exportJson(){ downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), (data.repo.name || 'git-graph') + '-data.json'); }
-function exportSvg(){ downloadBlob(new Blob([buildSvgString()], { type: 'image/svg+xml' }), (data.repo.name || 'git-graph') + '-graph.svg'); }
+function exportJson(){ const f=(data.repo.name||'git-graph')+'-data.json'; downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), f); toast('已导出 '+f); }
+function exportSvg(){ const f=(data.repo.name||'git-graph')+'-graph.svg'; downloadBlob(new Blob([buildSvgString()], { type: 'image/svg+xml' }), f); toast('已导出 '+f); }
 function exportPng(){
   const svgStr = buildSvgString();
   const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const img = new Image();
   const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
   const url = URL.createObjectURL(blob);
+  const f=(data.repo.name||'git-graph')+'-graph.png';
   img.onload = function(){
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(currentModel.width * scale));
@@ -665,9 +688,9 @@ function exportPng(){
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.drawImage(img, 0, 0);
     URL.revokeObjectURL(url);
-    canvas.toBlob(b => { if (b) downloadBlob(b, (data.repo.name || 'git-graph') + '-graph.png'); }, 'image/png');
+    canvas.toBlob(b => { if (b){ downloadBlob(b, f); toast('已导出 '+f); } else toast('PNG 导出失败，可改用 SVG'); }, 'image/png');
   };
-  img.onerror = function(){ URL.revokeObjectURL(url); alert('PNG 导出失败（SVG 渲染异常），可改用 SVG 导出'); };
+  img.onerror = function(){ URL.revokeObjectURL(url); toast('PNG 导出失败（SVG 渲染异常），可改用 SVG 导出'); };
   img.src = url;
 }
 document.getElementById('btnExportJson').addEventListener('click', exportJson);
@@ -677,11 +700,11 @@ document.getElementById('btnExportPng').addEventListener('click', exportPng);
 // ===== 切换仓库 / 刷新 / 帮助 / 时间粒度 =====
 document.getElementById('ggSwitchRepo').addEventListener('click', () => {
   if (window.gitGraphAPI && window.gitGraphAPI.openLauncher) window.gitGraphAPI.openLauncher();
-  else { const fi = document.getElementById('fileInput'); if (fi) fi.click(); }
+  else { const fi = document.getElementById('fileInput'); if (fi) fi.click(); toast('请选择要打开的 data.json'); }
 });
 document.getElementById('ggRefresh').addEventListener('click', () => {
   if (window.gitGraphAPI && window.gitGraphAPI.refresh){ window.gitGraphAPI.refresh(); return; }
-  render(); if (panelTab === 'stats') showStats();
+  render(); if (panelTab === 'stats') showStats(); toast('已刷新视图');
 });
 document.getElementById('btnHelp').addEventListener('click', () => { document.getElementById('helpOverlay').style.display = 'flex'; });
 document.getElementById('helpClose').addEventListener('click', () => { document.getElementById('helpOverlay').style.display = 'none'; });
