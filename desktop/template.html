@@ -323,103 +323,59 @@ function buildTreeModel(){
   return model;
 }
 
-// ===== 泳道(列)分配算法：移植自 tclh123/commits-graph（git 原生图算法）=====
-// 处理顺序 新→旧（子先于父）；维护活跃泳道，合并时关闭多余泳道并压缩；以默认分支为中线居中。
-// 新版：用 lane 回收 + 最大 lane 数上限，避免 express 这类高星仓库出现 6000+ 泳道、画布高度 40 万像素的不可读情况。
+// ===== 泳道(列)分配算法：子继承父链泳道（对高度合并的仓库也不会爆炸）=====
+// 旧算法是 git 原生列分配（新→旧处理 + 合并时释放列），对 xind2 这类「分支反复合入主干」的
+// 仓库会把泳道数撑到 120+，大部分提交被归档堆到最底层 → 视口只显示最早几个提交，看起来"没显示"。
+// 新算法：拓扑序（父先于子），每个提交继承 parents[0] 的泳道，只有新分支根才开新泳道，
+// 泳道数 = 分支数（main + 几条 feat），节点均匀分布，不再堆叠。
 const LANE_PALETTE = ['#4E79A7','#F28E2B','#59A14F','#E15759','#B07AA1','#76B7B2','#EDC948','#FF9DA7','#9c755f','#bab0ac'];
-const MAX_LANES = 120; // 超过时把最老的泳道压缩到归档区（仍保留连线）
 function computeLanes(commits, defaultBranch){
-  const isTrunk = c => (c.branches||[]).includes(defaultBranch);
-  const sorted = commits.slice().sort((a,b)=>{
-    if (a.time !== b.time) return a.time < b.time ? 1 : -1;
-    return (isTrunk(b)?1:0) - (isTrunk(a)?1:0);
-  });
-  const laneMap = {}; // laneId -> currentHash or null
-  const laneOfHash = {}; // hash -> [laneIds]（允许多个 lane 指向同一 hash）
-  const freeIds = []; // 可回收的 laneId（每次 pop 最小）
+  const map = {};
+  for (const c of commits) map[c.hash] = c;
+  // 拓扑排序：父先于子（DFS 后序）
+  const visited = new Set();
+  const order = [];
+  function visit(h){
+    if (visited.has(h)) return;
+    visited.add(h);
+    const c = map[h];
+    if (c){
+      const ps = c.parents || [];
+      for (let i = ps.length - 1; i >= 0; i--) visit(ps[i]);
+      order.push(c);
+    }
+  }
+  const roots = commits.filter(c => !(c.parents||[]).length || !(c.parents||[]).some(p => map[p]));
+  roots.sort((a,b) => (a.time < b.time ? -1 : 1)); // 最早的根先分配（主干通常最早 → lane 0）
+  for (const r of roots) visit(r.hash);
+  for (const c of commits) visit(c.hash); // 兜底：孤儿/环
+  // 泳道分配：子继承 parents[0] 的泳道，新分支根开新泳道
+  const laneOfHash = {};
   let nextId = 0;
-  function allocLane(hash){
-    let id;
-    if (freeIds.length){ freeIds.sort((a,b)=>a-b); id = freeIds.shift(); }
-    else { id = nextId++; }
-    laneMap[id] = hash;
-    (laneOfHash[hash] = laneOfHash[hash] || []).push(id);
-    return id;
-  }
-  function releaseLane(id){
-    const oldHash = laneMap[id];
-    laneMap[id] = null;
-    if (oldHash){
-      const arr = laneOfHash[oldHash] || [];
-      const idx = arr.indexOf(id);
-      if (idx !== -1) arr.splice(idx, 1);
-    }
-    freeIds.push(id);
-  }
-  function takeFirst(hash){
-    const arr = laneOfHash[hash] || [];
-    return arr.length ? arr[0] : undefined;
-  }
-  // 处理每个提交，按 git graph 规则移动/合并/释放泳道
-  for (const c of sorted){
-    let col = takeFirst(c.hash);
-    if (col === undefined) col = allocLane(c.hash);
+  for (const c of order){
     const ps = c.parents || [];
-    if (ps.length === 0){ releaseLane(col); }
-    else if (ps.length === 1){
-      const oldHash = laneMap[col];
-      if (oldHash){ const arr = laneOfHash[oldHash] || []; const idx = arr.indexOf(col); if (idx !== -1) arr.splice(idx, 1); }
-      laneMap[col] = ps[0];
-      (laneOfHash[ps[0]] = laneOfHash[ps[0]] || []).push(col);
-    } else {
-      const oldHash = laneMap[col];
-      if (oldHash){ const arr = laneOfHash[oldHash] || []; const idx = arr.indexOf(col); if (idx !== -1) arr.splice(idx, 1); }
-      laneMap[col] = ps[0];
-      (laneOfHash[ps[0]] = laneOfHash[ps[0]] || []).push(col);
-      for (let i=1;i<ps.length;i++){
-        const pc = takeFirst(ps[i]);
-        if (pc !== undefined && pc !== col) releaseLane(pc);
-      }
-    }
+    let lane;
+    if (ps.length && laneOfHash[ps[0]] !== undefined) lane = laneOfHash[ps[0]];
+    else lane = nextId++;
+    laneOfHash[c.hash] = lane;
   }
-  // 若活跃泳道仍超过上限，把最老的 commit 所在泳道释放（归到归档位置 MAX_LANES）
+  const laneCount = nextId;
+  // xRank：按时间升序
   const asc = commits.slice().sort((a,b)=>(a.time<b.time?-1:(a.time>b.time?1:0)));
   const xRank = {}; asc.forEach((c,i)=> xRank[c.hash]=i);
-  let archivedCount = 0;
-  const archivedHashes = new Set();
-  while (Object.values(laneMap).filter(h => h !== null).length > MAX_LANES && archivedCount < commits.length){
-    // 找 xRank 最小的活跃 lane 释放
-    let oldestHash = null, oldestId = -1, oldestRank = Infinity;
-    for (const id in laneMap){
-      const h = laneMap[id];
-      if (!h) continue;
-      const r = xRank[h] !== undefined ? xRank[h] : Infinity;
-      if (r < oldestRank){ oldestRank = r; oldestHash = h; oldestId = Number(id); }
-    }
-    if (oldestId === -1) break;
-    releaseLane(oldestId);
-    archivedHashes.add(oldestHash);
-    archivedCount++;
-  }
   // 居中：默认分支最新头提交所在泳道
-  const defHeads = commits.filter(c=> (c.branches||[]).includes(defaultBranch)).sort((a,b)=>(a.time<b.time?1:-1));
-  const center = defHeads.length ? (takeFirst(defHeads[0].hash) || 0) : 0;
+  const isTrunk = c => (c.branches||[]).includes(defaultBranch);
+  const defHeads = commits.filter(isTrunk).sort((a,b)=>(a.time<b.time?1:-1));
+  const center = defHeads.length ? laneOfHash[defHeads[0].hash] : 0;
   const absLane = {}, commitColor = {}, rel = {};
   for (const c of commits){
     const h = c.hash;
-    const l = takeFirst(h);
-    if (l === undefined){
-      // 被归档的 hash 没有活跃 lane，放到归档区（center 下方固定位置）
-      absLane[h] = MAX_LANES;
-      commitColor[h] = '#9c755f';
-      rel[h] = MAX_LANES - center;
-    } else {
-      absLane[h] = l;
-      commitColor[h] = LANE_PALETTE[l % LANE_PALETTE.length];
-      rel[h] = l - center;
-    }
+    const l = laneOfHash[h];
+    absLane[h] = l;
+    commitColor[h] = LANE_PALETTE[l % LANE_PALETTE.length];
+    rel[h] = l - center;
   }
-  return { absLane, rel, xRank, colorHex: commitColor, center };
+  return { absLane, rel, xRank, colorHex: commitColor, center, laneCount };
 }
 
 // ===== 模式 E：分支拓扑泳道（基于 computeLanes 的正确拓扑，横向时间轴 + 居中主干）=====
