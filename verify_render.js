@@ -12,7 +12,15 @@ let script = m[1];
 // 把 __DATA__ 占位替换成真实 json（避免走 build.js 重新生成）
 script = script.replace("const DATA = __DATA__;", "const DATA = __EXPRESS__;");
 // 末尾暴露内部状态供校验（currentModel 是 let，vm 不会挂到 sandbox）
-script += "\nglobalThis.__currentModel = currentModel;\nglobalThis.__clusterMode = clusterMode;\n";
+// 同时切换「按分支分泳道」再渲染一次，校验分支模式布局合法
+script += `
+globalThis.__topoModel = currentModel;
+laneMode = 'branch';
+render();
+globalThis.__currentModel = currentModel;
+globalThis.__branchMode = laneMode;
+globalThis.__clusterMode = clusterMode;
+`;
 
 // ---- DOM / window 打桩 ----
 function fakeEl(){
@@ -59,7 +67,7 @@ try {
 const model = sandbox.__currentModel;
 if (!model) { console.error('currentModel 未生成'); process.exit(3); }
 const nodes = model.nodes || [];
-let nan = 0, zero = 0;
+let nan = 0;
 let minx=Infinity, maxx=-Infinity, miny=Infinity, maxy=-Infinity;
 for (const n of nodes){
   if (typeof n._x !== 'number' || isNaN(n._x) || typeof n._y !== 'number' || isNaN(n._y)) nan++;
@@ -67,12 +75,13 @@ for (const n of nodes){
 }
 const types = {};
 for (const n of nodes) types[n.type] = (types[n.type]||0)+1;
-console.log('模式 E 节点总数:', nodes.length);
+console.log('分支模式 laneMode =', sandbox.__branchMode);
+console.log('分支模式节点总数:', nodes.length);
 console.log('节点类型:', JSON.stringify(types));
 console.log('NaN/非法坐标节点:', nan);
 console.log('model.width =', model.width, ' model.height =', model.height);
-console.log('节坐坐标范围 x:[', minx, ',', maxx, '] y:[', miny, ',', maxy, ']');
+console.log('节点坐标范围 x:[', minx, ',', maxx, '] y:[', miny, ',', maxy, ']');
 console.log('聚合模式 clusterMode =', sandbox.__clusterMode);
 const ok = nan === 0 && nodes.length > 0 && isFinite(model.width) && isFinite(model.height);
-console.log(ok ? '✅ 渲染逻辑正常，坐标合法' : '❌ 存在问题');
+console.log(ok ? '✅ 分支模式渲染逻辑正常，坐标合法' : '❌ 分支模式存在问题');
 process.exit(ok ? 0 : 4);
