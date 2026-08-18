@@ -128,6 +128,7 @@
     <button data-mode="D">时间线</button>
   </span>
   <button id="toggleCluster" title="分支拓扑模式下，把同作者连续提交聚合成大节点（再点展开）">聚合</button>
+  <button id="toggleLongJump" title="显示/隐藏跨很远时间的长距离连线">长连线</button>
   <button id="expandAll">展开全部</button>
   <button id="collapseAll">折叠全部</button>
   <input id="search" placeholder="搜索 提交/hash/作者">
@@ -223,6 +224,7 @@ let clusterMode = false;          // 分支拓扑模式下的作者-时间聚合
 let clusterWindowDays = 7;        // 同作者连续提交超过此天数则拆分为新簇
 let expandedClusters = new Set(); // 已展开查看详情的簇 id
 let clusterMap = {};              // 当前渲染的簇 id -> cluster
+let showLongJumps = false;        // 是否显示跨很远时间的长距离连线
 
 // ===== 偏好持久化（localStorage）=====
 const LS = {
@@ -573,7 +575,10 @@ function render(){
     const minY = (st - M) / sx, maxY = (st + ch + M) / sx;
     const inView = (x,y)=> (x > minX && x < maxX && y > minY && y < maxY);
     if (mode === 'E'){
-      viewConn = (model.connectors||[]).filter(c=> inView((c.x1+c.x2)/2,(c.y1+c.y2)/2));
+      viewConn = (model.connectors||[]).filter(c=> {
+        if (!showLongJumps && c.longJump) return false; // 长连线开关：关闭时过滤掉
+        return inView((c.x1+c.x2)/2,(c.y1+c.y2)/2);
+      });
     } else {
       viewLinks = (model.links||[]).filter(l=> inView((l.x1+l.x2)/2,(l.y1+l.y2)/2));
     }
@@ -778,6 +783,8 @@ document.getElementById('svg').addEventListener('mouseout', () => { tip.style.op
 document.getElementById('modeGroup').addEventListener('click', e => { const b=e.target.closest('button[data-mode]'); if(!b) return; mode=b.dataset.mode; LS.set('mode', mode); document.querySelectorAll('#modeGroup button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); render(); toast('模式：'+b.textContent.trim()); });
 function syncClusterButton(){ const b=document.getElementById('toggleCluster'); if(b) b.classList.toggle('active', clusterMode); }
 document.getElementById('toggleCluster').addEventListener('click', function(){ const btn = this; btn.classList.add('loading'); setTimeout(() => { clusterMode = !clusterMode; expandedClusters.clear(); LS.set('clusterMode', clusterMode); render(); syncClusterButton(); btn.classList.remove('loading'); toast(clusterMode ? '已开启聚合视图' : '已关闭聚合视图'); }, 30); });
+function syncLongJumpButton(){ const b=document.getElementById('toggleLongJump'); if(b) b.classList.toggle('active', showLongJumps); if(b) b.title = showLongJumps ? '长距离连线：显示中（点击隐藏）' : '长距离连线：已隐藏（点击显示）'; }
+document.getElementById('toggleLongJump').addEventListener('click', function(){ const btn = this; btn.classList.add('loading'); setTimeout(() => { showLongJumps = !showLongJumps; LS.set('showLongJumps', showLongJumps); render(); syncLongJumpButton(); btn.classList.remove('loading'); toast(showLongJumps ? '已显示长距离连线' : '已隐藏长距离连线'); }, 30); });
 function syncModeButtons(){ document.querySelectorAll('#modeGroup button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode)); }
 document.getElementById('expandAll').addEventListener('click', function(){ this.classList.add('loading'); setTimeout(() => { setAllCollapsed(false); this.classList.remove('loading'); toast('已展开全部'); }, 30); });
 document.getElementById('collapseAll').addEventListener('click', function(){ this.classList.add('loading'); setTimeout(() => { setAllCollapsed(true); this.classList.remove('loading'); toast('已折叠全部'); }, 30); });
@@ -1086,8 +1093,10 @@ if (LS.get('axisGran', null) === null){
   LS.set('axisGran', axisGran);
 }
 document.getElementById('axisGran').value = axisGran;
+{ const lj = LS.get('showLongJumps', null); if (typeof lj === 'boolean') showLongJumps = lj; }
 syncModeButtons();
 syncClusterButton();
+syncLongJumpButton();
 applyPersistedFilters();
 showStats();
 render();
