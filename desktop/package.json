@@ -1,0 +1,15 @@
+{
+  "name": "git-commit-graph",
+  "productName": "Git提交图谱",
+  "version": "1.0.0",
+  "description": "本地 Git 提交历史可视化查看器（桌面版）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-packager": "^17.1.2"
+  }
+}

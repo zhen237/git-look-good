@@ -1,0 +1,23 @@
+# ===== 生成产物 / 大文件（由 run.js / build.js 重新生成，勿入库）=====
+git-graph.html
+data.json
+data.full.json
+*.exe
+
+# ===== 临时校验脚本（开发期调试用）=====
+_verify_*.js
+
+# ===== 测试样例仓库（自带 .git，避免嵌套仓库）=====
+sample-repo/
+
+# ===== Node 依赖 / 打包输出 =====
+node_modules/
+desktop/node_modules/
+dist/
+dist_*/
+desktop/dist/
+desktop/dist_*/
+
+# ===== 日志 =====
+*.log
+.DS_Store

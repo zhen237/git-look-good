@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Git 提交图谱</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #222; background: #f5f6f8; }
+  #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; background: #fff; border-bottom: 1px solid #e2e4e8; }
+  #toolbar strong { font-size: 15px; }
+  .mode-group button, #toolbar button, .filebtn { font: inherit; font-size: 13px; padding: 5px 10px; border: 1px solid #cbd2dc; background: #fff; border-radius: 7px; cursor: pointer; }
+  .mode-group button.active { background: #4E79A7; color: #fff; border-color: #4E79A7; }
+  #search { font: inherit; font-size: 13px; padding: 5px 9px; border: 1px solid #cbd2dc; border-radius: 7px; width: 200px; }
+  .filebtn { display: inline-block; }
+  #filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 14px; background: #fafbfc; border-bottom: 1px solid #eef0f3; font-size: 12px; color: #555; }
+  #filters label { margin-right: 4px; }
+  #main { display: flex; height: calc(100% - 96px); }
+  #canvasWrap { flex: 1; overflow: auto; position: relative; background: #fff; }
+  #svg { display: block; }
+  #panel { width: 380px; border-left: 1px solid #e2e4e8; background: #fafbfc; overflow: auto; padding: 14px; }
+  #panelEmpty { color: #888; font-size: 13px; line-height: 1.7; }
+  .node { cursor: pointer; }
+  .node rect { stroke: rgba(0,0,0,0.12); stroke-width: 0.5; }
+  .node text { font-size: 12px; dominant-baseline: middle; pointer-events: none; }
+  .node.sel rect, .node.sel circle { stroke: #E8554E; stroke-width: 2.5; }
+  .node.hit rect, .node.hit circle { stroke: #E8554E; stroke-width: 2; }
+  .link { fill: none; stroke: #c2c8d2; stroke-width: 1.5; }
+  .lane { fill: none; stroke: #b7c0cc; stroke-width: 3; }
+  .commit-rect { rx: 6; }
+  .conn { fill: none; stroke: #aab3bf; stroke-width: 2.5; stroke-linecap: round; }
+  .conn.hl { stroke: #E8554E; stroke-width: 3.5; opacity: 1; }
+  .conn.dim, .node.dim { opacity: 0.16; }
+  .branch-label { font-size: 11px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+  .commit-label { font-size: 9px; fill: #9aa2ad; text-anchor: middle; pointer-events: none; }
+  .node:not(.sel):hover circle { stroke: #2b2f36; stroke-width: 2.5; }
+  .axis { stroke: #d8dce3; stroke-width: 1; }
+  .axis-label { font-size: 10px; fill: #98a0ad; }
+  .axis-marker { fill: #E8554E; }
+  #tooltip { position: fixed; pointer-events: none; background: #222; color: #fff; font-size: 12px; padding: 6px 9px; border-radius: 6px; opacity: 0; transition: opacity .1s; max-width: 320px; z-index: 10; white-space: pre-line; line-height: 1.5; }
+  .chip { display: inline-block; padding: 2px 8px; border-radius: 10px; color: #fff; font-size: 12px; }
+  .tag { display:inline-block; background:#eef1f5; color:#556; border-radius:5px; padding:1px 7px; font-size:11px; margin:2px 3px 2px 0; }
+  .file-row { display:flex; justify-content:space-between; font-size:12px; padding:3px 0; border-bottom:1px dashed #eef0f3; }
+  .add { color:#1d9e75; } .del { color:#e24b4a; }
+  pre.diff { background:#fff; border:1px solid #eef0f3; border-radius:6px; padding:8px; font-size:11.5px; line-height:1.45; overflow:auto; max-height:300px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  pre.diff .add { background:#eafaf3; display:block; }
+  pre.diff .del { background:#fdecec; display:block; }
+  pre.diff .hunk { color:#7a5fb0; display:block; }
+  pre.diff .ctx { color:#444; display:block; white-space:pre; }
+  h3 { margin: 6px 0 8px; font-size: 14px; }
+  .kv { font-size: 12.5px; color:#555; margin: 3px 0; }
+  .btn { font:inherit; font-size:12px; padding:4px 9px; border:1px solid #cbd2dc; background:#fff; border-radius:6px; cursor:pointer; }
+  /* 面板 tab */
+  #panelTabs { display:flex; gap:6px; margin-bottom:10px; }
+  #panelTabs button { font:inherit; font-size:12px; padding:4px 10px; border:1px solid #cbd2dc; background:#fff; border-radius:6px; cursor:pointer; }
+  #panelTabs button.active { background:#4E79A7; color:#fff; border-color:#4E79A7; }
+  /* 统计面板 */
+  .stat-block { margin-bottom:16px; }
+  .stat-block h3 { font-size:13px; margin:0 0 8px; }
+  .rank-row { display:flex; align-items:center; gap:8px; font-size:12px; padding:4px 5px; cursor:pointer; border-radius:5px; }
+  .rank-row:hover { background:#eef2f7; }
+  .rank-dot { width:10px; height:10px; border-radius:3px; flex:none; }
+  .rank-name { flex:0 0 52px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rank-count { color:#889; font-size:11px; flex:none; }
+  .rank-track { flex:1; height:10px; background:#eef0f3; border-radius:5px; overflow:hidden; }
+  .rank-fill { height:100%; border-radius:5px; }
+  .heat-grid { display:grid; grid-template-columns:repeat(26, 1fr); gap:2px; }
+  .heat-cell { aspect-ratio:1; border-radius:2px; background:#eef0f3; }
+  .trend { display:flex; align-items:flex-end; gap:3px; height:76px; padding-top:4px; }
+  .trend-col { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; min-width:0; height:100%; justify-content:flex-end; }
+  .trend-bar { width:100%; background:#4E79A7; border-radius:2px 2px 0 0; min-height:2px; }
+  .trend-label { font-size:9px; color:#98a0ad; writing-mode:vertical-rl; text-orientation:mixed; max-height:38px; overflow:hidden; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <strong>Git 提交图谱</strong>
+  <span class="mode-group" id="modeGroup">
+    <button data-mode="E" class="active">分支拓扑</button>
+    <button data-mode="A">仓库→分支→作者</button>
+    <button data-mode="B">仓库→作者</button>
+    <button data-mode="C">作者→仓库</button>
+    <button data-mode="D">时间线</button>
+  </span>
+  <button id="expandAll">展开全部</button>
+  <button id="collapseAll">折叠全部</button>
+  <input id="search" placeholder="搜索 提交/hash/作者">
+  <label class="filebtn">加载 data.json<input id="fileInput" type="file" accept=".json" style="display:none"></label>
+</div>
+<div id="filters">
+  <span>作者:</span><span id="authorFilters"></span>
+  <span>分支:</span><span id="branchFilters"></span>
+</div>
+<div id="main">
+  <div id="canvasWrap"><svg id="svg"></svg></div>
+  <div id="panel">
+    <div id="panelTabs">
+      <button data-tab="stats" class="active">统计</button>
+      <button data-tab="detail">提交详情</button>
+    </div>
+    <div id="panelEmpty" style="display:none">点击任意「提交」节点查看详情（含完整 diff）。<br>灰/蓝/橙等色块为仓库、分支、作者节点，点击可展开/折叠；泳道图中点击提交圆点看作者与时间。</div>
+    <div id="panelContent"></div>
+  </div>
+</div>
+<div id="tooltip"></div>
+
+<script>
+const DATA = __DATA__;
+
+let data = DATA;
+let mode = 'E';
+let searchTerm = '';
+let activeAuthors = new Set();
+let activeBranches = new Set();
+let selectedHash = null;
+let nodeMap = {};
+let nodeSeq = 0;
+let visible = [];
+
+const NODE_W = 168, NODE_H = 26, X_GAP = 210, LEAF_GAP = 34, TOP = 46;
+
+function findAuthor(id){ return data.authors.find(a => a.id === id); }
+function authorColor(id){ const a = findAuthor(id); return a ? a.color : '#888'; }
+function authorName(id){ const a = findAuthor(id); return a ? a.name : id; }
+function byTime(a,b){ return a.time < b.time ? -1 : 1; }
+function commitTip(c){ return `提交 ${c.hash.slice(0,7)}\n${c.message}\n作者 ${authorName(c.authorId)} · ${c.time}\n+${c.additions} / -${c.deletions} · ${c.filesChanged} 文件`; }
+
+function commitPasses(c){
+  if (!activeAuthors.has(c.authorId)) return false;
+  if (!c.branches.some(b => activeBranches.has(b))) return false;
+  if (searchTerm){
+    const hay = (c.hash + ' ' + c.message + ' ' + authorName(c.authorId)).toLowerCase();
+    if (!hay.includes(searchTerm)) return false;
+  }
+  return true;
+}
+function commitNode(c){
+  return { id: 'n' + (nodeSeq++), type: 'commit', label: c.hash.slice(0,7), sub: c.message, color: authorColor(c.authorId), commit: c, children: [], tip: commitTip(c) };
+}
+
+// ===== 模式 A/B/C/D：层级树 =====
+function buildTree(){
+  nodeSeq = 0;
+  const root = { id:'n'+(nodeSeq++), type:'repo', label:data.repo.name, color:'#5b6470', children:[], tip:`仓库 ${data.repo.name}\n提交 ${data.repo.commitCount} · 作者 ${data.repo.authorCount} · 分支 ${data.repo.branches.length}` };
+  if (mode === 'A'){
+    for (const b of data.repo.branches){
+      if (!activeBranches.has(b.name)) continue;
+      const bnode = { id:'n'+(nodeSeq++), type:'branch', label:b.name, color:'#8a93a0', children:[], tip:`分支 ${b.name}` };
+      const amap = {};
+      for (const c of data.commits){ if (!commitPasses(c)) continue; if (!c.branches.includes(b.name)) continue; (amap[c.authorId]=amap[c.authorId]||{commits:[]}).commits.push(c); }
+      for (const aid of Object.keys(amap)){
+        const an = { id:'n'+(nodeSeq++), type:'author', label:authorName(aid), color:authorColor(aid), children:[], tip:`作者 ${authorName(aid)}\n该分支提交 ${amap[aid].commits.length}` };
+        an.children = amap[aid].commits.slice().sort(byTime).map(commitNode);
+        if (an.children.length) bnode.children.push(an);
+      }
+      root.children.push(bnode);
+    }
+  } else if (mode === 'B'){
+    for (const a of data.authors){ if (!activeAuthors.has(a.id)) continue;
+      const an = { id:'n'+(nodeSeq++), type:'author', label:a.name, color:a.color, children:[], tip:`作者 ${a.name}\n总提交 ${a.commitCount}\n${a.activeStart} ~ ${a.activeEnd}` };
+      an.children = data.commits.filter(commitPasses).sort(byTime).map(commitNode);
+      if (an.children.length) root.children.push(an);
+    }
+  } else if (mode === 'C'){
+    for (const a of data.authors){ if (!activeAuthors.has(a.id)) continue;
+      const an = { id:'n'+(nodeSeq++), type:'author', label:a.name, color:a.color, children:[], tip:`作者 ${a.name}` };
+      const bmap = {};
+      for (const c of data.commits){ if (!commitPasses(c)) continue; for (const b of c.branches) (bmap[b]=bmap[b]||[]).push(c); }
+      for (const b of Object.keys(bmap)){ const bn = { id:'n'+(nodeSeq++), type:'branch', label:b, color:'#8a93a0', children:[] }; bn.children = bmap[b].slice().sort(byTime).map(commitNode); if (bn.children.length) an.children.push(bn); }
+      if (an.children.length) root.children.push(an);
+    }
+  } else if (mode === 'D'){
+    const mmap = {};
+    for (const c of data.commits){ if (!commitPasses(c)) continue; const m = c.time.slice(0,7); (mmap[m]=mmap[m]||[]).push(c); }
+    for (const m of Object.keys(mmap).sort()){ const mn = { id:'n'+(nodeSeq++), type:'branch', label:m, color:'#8a93a0', children:[], tip:`${m} 提交 ${mmap[m].length}` }; mn.children = mmap[m].slice().sort(byTime).map(commitNode); root.children.push(mn); }
+  }
+  return root;
+}
+function layout(root){
+  visible = []; let leaf = 0;
+  function assign(node, depth, parent){
+    node._depth = depth; node._parent = parent; node._x = depth * X_GAP;
+    if ((node.collapsed && !searchTerm) || !node.children || node.children.length === 0){ node._y = TOP + leaf * LEAF_GAP; leaf++; }
+    else { node.children.forEach(ch => assign(ch, depth+1, node)); node._y = (node.children[0]._y + node.children[node.children.length-1]._y)/2; }
+    visible.push(node);
+  }
+  assign(root, 0, null);
+  return leaf;
+}
+function buildTreeModel(){
+  const root = buildTree();
+  const leaves = layout(root);
+  const links = [];
+  for (const n of visible){ if (n._parent){ const px = n._parent._x + (n._parent.type==='commit'?NODE_W:150), py = n._parent._y, x=n._x, y=n._y, mx=(px+x)/2; links.push(`<path class="link" d="M${px},${py} C${mx},${py} ${mx},${y} ${x},${y}"/>`); } }
+  let maxX = 0; for (const n of visible) maxX = Math.max(maxX, n._x + (n.type==='commit'?NODE_W:150));
+  return { nodes: visible, links, laneLines: [], width: maxX+60, height: TOP + leaves*LEAF_GAP + 30 };
+}
+
+// ===== 泳道(列)分配算法：移植自 tclh123/commits-graph（git 原生图算法）=====
+// 处理顺序 新→旧（子先于父）；维护活跃泳道，合并时关闭多余泳道并压缩；以默认分支为中线居中。
+const LANE_PALETTE = ['#4E79A7','#F28E2B','#59A14F','#E15759','#B07AA1','#76B7B2','#EDC948','#FF9DA7','#9c755f','#bab0ac'];
+function computeLanes(commits, defaultBranch){
+  const isTrunk = c => (c.branches||[]).includes(defaultBranch);
+  // 新→旧；同时间戳时主干(default branch)优先，使其占据中线 lane 0（分叉点主干即中枢）
+  const sorted = commits.slice().sort((a,b)=>{
+    if (a.time !== b.time) return a.time < b.time ? 1 : -1;
+    return (isTrunk(b)?1:0) - (isTrunk(a)?1:0);
+  });
+  const laneSha = [], laneColor = [], absLane = {}, commitColor = {};
+  let colorSeq = 0;
+  for (const c of sorted){
+    let col = laneSha.indexOf(c.hash);
+    if (col === -1){ col = laneSha.length; laneSha.push(c.hash); laneColor.push(colorSeq++); }
+    commitColor[c.hash] = LANE_PALETTE[laneColor[col] % LANE_PALETTE.length];
+    absLane[c.hash] = col;
+    const ps = c.parents || [];
+    if (ps.length === 0){ laneSha[col] = null; }
+    else if (ps.length === 1){ laneSha[col] = ps[0]; }
+    else { laneSha[col] = ps[0]; for (let i=1;i<ps.length;i++){ const pc = laneSha.indexOf(ps[i]); if (pc!==-1 && pc!==col) laneSha[pc] = null; } }
+    for (let i=laneSha.length-1;i>=0;i--){ if (laneSha[i]===null){ laneSha.splice(i,1); laneColor.splice(i,1); } }
+  }
+  let center = 0;
+  const defHeads = commits.filter(c=> (c.branches||[]).includes(defaultBranch)).sort((a,b)=>(a.time<b.time?1:-1));
+  if (defHeads.length) center = absLane[defHeads[0].hash];
+  const asc = commits.slice().sort((a,b)=>(a.time<b.time?-1:(a.time>b.time?1:0)));
+  const xRank = {}; asc.forEach((c,i)=> xRank[c.hash]=i);
+  const rel = {}; for (const c of commits) rel[c.hash] = absLane[c.hash] - center;
+  return { absLane, rel, xRank, colorHex: commitColor, center };
+}
+
+// ===== 模式 E：分支拓扑泳道（基于 computeLanes 的正确拓扑，横向时间轴 + 居中主干）=====
+function buildLanes(){
+  const main = data.repo.defaultBranch || (data.repo.branches[0] && data.repo.branches[0].name);
+  const L = computeLanes(data.commits, main);
+  const STEP = 78, STARTX = 140, MAINY = 220, LANE_GAP = 64, R = 11;
+  const nodes = []; const connectors = [];
+  const pos = {};
+  // 提交节点：x=时间序号，y=相对泳道(0 居中为主干)
+  for (const c of data.commits){
+    const x = STARTX + L.xRank[c.hash]*STEP, y = MAINY + L.rel[c.hash]*LANE_GAP;
+    pos[c.hash] = {x,y};
+    nodes.push({ id:'c'+c.hash, type:'commit', label:c.hash.slice(0,7), color:L.colorHex[c.hash], commit:c, _x:x, _y:y, parentHashes:c.parents.slice() });
+  }
+  // 父→子 连线：同泳道直线，跨泳道曲线；颜色取子提交所在泳道色（分支着色）
+  for (const c of data.commits){
+    const a = pos[c.hash];
+    for (const ph of c.parents){
+      const b = pos[ph]; if (!b) continue;
+      const curve = (L.rel[c.hash] !== L.rel[ph]);
+      connectors.push({ x1:b.x, y1:b.y, x2:a.x, y2:a.y, curve, toHash:c.hash, color:L.colorHex[c.hash] });
+    }
+  }
+  // 仓库节点 + 连线到最旧提交（xRank 0）
+  let rootHash = null, rootRank = Infinity;
+  for (const c of data.commits){ if (L.xRank[c.hash] < rootRank){ rootRank = L.xRank[c.hash]; rootHash = c.hash; } }
+  const rootPos = rootHash ? pos[rootHash] : {x:STARTX, y:MAINY};
+  nodes.unshift({ id:'repo', type:'repo', label:data.repo.name, color:'#5b6470', _x:12, _y:MAINY, tip:`仓库 ${data.repo.name}\n默认分支 ${main}` });
+  if (rootHash) connectors.unshift({ x1:112, y1:MAINY, x2:rootPos.x, y2:rootPos.y, curve:false, toHash:rootHash, color:'#9aa3af' });
+  // 分支名标签：非主干分支挂在「分支头提交」正上方（同头提交多分支横向错开），颜色取该泳道色
+  const headOf = {};
+  for (const c of data.commits){ for (const b of c.branches){ const cur = headOf[b]; if (!cur || L.xRank[c.hash] > L.xRank[cur]) headOf[b] = c.hash; } }
+  const usedAt = {}; let labelSeq = 0;
+  for (const b of data.repo.branches){
+    if (b.name === main) continue;
+    const hh = headOf[b.name], hp = pos[hh]; if (!hh || !hp) continue;
+    const k = usedAt[hh] || 0; usedAt[hh] = k + 1;
+    nodes.push({ id:'bl'+(labelSeq++), type:'branchlabel', label:b.name, color:L.colorHex[hh], _x:hp.x + k*96, _y:hp.y - 27, _anchor:'middle', tip:`分支 ${b.name}\n头提交 ${hh.slice(0,7)}` });
+  }
+  let maxX = STARTX + (data.commits.length-1)*STEP;
+  let maxRel = 0; for (const c of data.commits) maxRel = Math.max(maxRel, Math.abs(L.rel[c.hash]));
+  return { nodes, connectors, width: maxX+100, height: MAINY + (maxRel+1)*LANE_GAP + 60 };
+}
+
+function render(){
+  const model = (mode === 'E') ? buildLanes() : buildTreeModel();
+  nodeMap = {}; model.nodes.forEach(n => nodeMap[n.id] = n);
+  const { width, height, connectors, links } = model;
+  // 选中提交时，高亮其祖先链路（仓库→主干→分支→该提交）
+  let hlCommits = null;
+  if (mode === 'E' && selectedHash){
+    const nbh = {}; model.nodes.forEach(n => { if (n.commit) nbh[n.commit.hash] = n; });
+    hlCommits = new Set(); const stack = [nbh[selectedHash]];
+    while (stack.length){ const n = stack.pop(); if (!n || !n.commit || hlCommits.has(n.commit.hash)) continue; hlCommits.add(n.commit.hash); for (const ph of n.parentHashes){ if (nbh[ph]) stack.push(nbh[ph]); } }
+  }
+
+  const times = data.commits.map(c => new Date(c.time).getTime()).filter(t => !isNaN(t));
+  const tmin = Math.min(...times), tmax = Math.max(...times);
+  let axisSvg = '';
+  if (times.length){
+    const axY = 24;
+    axisSvg += `<line class="axis" x1="20" y1="${axY}" x2="${width-20}" y2="${axY}"/>`;
+    const d = new Date(tmin); d.setDate(1); d.setHours(0,0,0,0);
+    while (d.getTime() <= tmax){
+      const frac = (d.getTime() - tmin) / (tmax - tmin || 1);
+      const x = 20 + frac * (width - 40);
+      axisSvg += `<line class="axis" x1="${x}" y1="${axY-4}" x2="${x}" y2="${axY+4}"/>`;
+      axisSvg += `<text class="axis-label" x="${x}" y="${axY-7}" text-anchor="middle">${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}</text>`;
+      d.setMonth(d.getMonth() + 1);
+    }
+    if (selectedHash){ const c = data.commits.find(x => x.hash === selectedHash); if (c){ const frac = (new Date(c.time).getTime() - tmin)/(tmax - tmin || 1); const x = 20 + frac*(width-40); axisSvg += `<line class="axis-marker" x1="${x}" y1="${axY-9}" x2="${x}" y2="${axY+9}" stroke="#E8554E" stroke-width="2"/>`; } }
+  }
+
+  // 视口裁剪（虚拟化）：仅渲染可见区域附近的元素，应对大仓库
+  const canvasWrap = document.getElementById('canvasWrap');
+  let viewNodes = model.nodes, viewConn = (mode==='E' ? (model.connectors||[]) : null);
+  if (mode === 'E' && canvasWrap){
+    const sl = canvasWrap.scrollLeft, st = canvasWrap.scrollTop, cw = canvasWrap.clientWidth, ch = canvasWrap.clientHeight, M = 400;
+    const inView = (x,y)=> (x > sl-M && x < sl+cw+M && y > st-M && y < st+ch+M);
+    viewConn = (model.connectors||[]).filter(c=> inView((c.x1+c.x2)/2,(c.y1+c.y2)/2));
+    viewNodes = model.nodes.filter(n=> n.type==='repo' || inView(n._x, n._y));
+  }
+  let connSvg = '';
+  if (mode === 'E'){
+    for (const c of viewConn){
+      const on = hlCommits ? hlCommits.has(c.toHash) : false;
+      const cls = 'conn' + (c.curve?' curve':'') + (hlCommits ? (on?' hl':' dim') : '');
+      const stroke = on ? '#E8554E' : c.color;
+      connSvg += c.curve
+        ? `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} C${c.x1},${(c.y1+c.y2)/2} ${c.x2},${(c.y1+c.y2)/2} ${c.x2},${c.y2}"/>`
+        : `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} L${c.x2},${c.y2}"/>`;
+    }
+  } else {
+    connSvg = (links||[]).join('');
+  }
+  let nodesSvg = '';
+  for (const n of viewNodes){
+    const isSel = (n.type==='commit' && n.commit && n.commit.hash===selectedHash);
+    const isHit = (n.type==='commit' && searchTerm && (n.commit.hash+' '+n.commit.message+' '+authorName(n.commit.authorId)).toLowerCase().includes(searchTerm));
+    let cls = 'node' + (isSel?' sel':'') + (isHit?' hit':'');
+    if (hlCommits && n.commit && !hlCommits.has(n.commit.hash) && n.type!=='repo') cls += ' dim';
+    if (n.type==='branchlabel'){
+      nodesSvg += `<text class="branch-label" x="${n._x}" y="${n._y}" text-anchor="${n._anchor||'end'}" fill="${n.color||'#6b7480'}">${escapeHtml(n.label)}</text>`;
+    } else if (mode==='E' && n.type==='commit'){
+      let s = `<g class="${cls}" data-nodeid="${n.id}"><circle cx="${n._x}" cy="${n._y}" r="11" fill="${n.color}" stroke="rgba(0,0,0,0.18)" stroke-width="0.6"/>`;
+      if (isSel) s += `<circle cx="${n._x}" cy="${n._y}" r="17" fill="none" stroke="#E8554E" stroke-width="3"/>`;
+      s += `<text class="commit-label" x="${n._x}" y="${n._y+25}">${n.label}</text></g>`; nodesSvg += s;
+    } else {
+      const w = (mode==='E' && n.type==='repo') ? 100 : (n.type==='commit' ? NODE_W : 150);
+      const rect = n.type==='commit' ? `<rect class="commit-rect" x="${n._x}" y="${n._y-NODE_H/2}" width="${NODE_W}" height="${NODE_H}" rx="6" fill="${n.color}"/>` : `<rect x="${n._x}" y="${n._y-NODE_H/2}" width="${w}" height="${NODE_H}" rx="8" fill="${n.color}"/>`;
+      let label = n.label; if (n.type==='commit') label = n.label + '  ' + (n.sub.length>14?n.sub.slice(0,14)+'…':n.sub);
+      nodesSvg += `<g class="${cls}" data-nodeid="${n.id}">${rect}<text x="${n._x+10}" y="${n._y+1}" fill="#fff">${escapeHtml(label)}</text></g>`;
+    }
+  }
+  document.getElementById('svg').setAttribute('viewBox', `0 0 ${width} ${height}`);
+  document.getElementById('svg').setAttribute('width', width);
+  document.getElementById('svg').setAttribute('height', height);
+  document.getElementById('svg').innerHTML = axisSvg + connSvg + nodesSvg;
+}
+
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function selectCommit(c){
+  selectedHash = c.hash;
+  showDetail();
+  render();
+}
+function renderDetail(c){
+  const a = findAuthor(c.authorId);
+  const panel = document.getElementById('panelContent');
+  let files = c.files.map(f => `<div class="file-row"><span>${escapeHtml(f.path)}</span><span><span class="add">+${f.additions}</span> <span class="del">-${f.deletions}</span></span></div>`).join('');
+  let diffHtml = '';
+  if (c.patch){ diffHtml = c.patch.split('\n').map(line => { let cls='ctx'; if (line.startsWith('+')&&!line.startsWith('+++')) cls='add'; else if (line.startsWith('-')&&!line.startsWith('---')) cls='del'; else if (line.startsWith('@@')) cls='hunk'; return `<span class="${cls}">${escapeHtml(line)}</span>`; }).join(''); }
+  panel.innerHTML = `
+    <h3>提交详情</h3>
+    <div class="kv"><b>hash:</b> ${c.hash}</div>
+    <div class="kv"><b>message:</b> ${escapeHtml(c.message)}</div>
+    <div class="kv"><b>作者:</b> <span class="chip" style="background:${a?a.color:'#888'}">${escapeHtml(authorName(c.authorId))}</span></div>
+    <div class="kv"><b>时间:</b> ${c.time}</div>
+    <div class="kv"><b>分支:</b> ${c.branches.map(b=>`<span class="tag">${escapeHtml(b)}</span>`).join('')}</div>
+    <div class="kv"><b>改动:</b> <span class="add">+${c.additions}</span> / <span class="del">-${c.deletions}</span> · ${c.filesChanged} 文件</div>
+    <h3 style="margin-top:12px">文件清单</h3>${files}
+    <h3 style="margin-top:12px">完整 diff</h3><pre class="diff">${diffHtml || '（无 diff / 合并提交）'}</pre>`;
+  document.getElementById('panelEmpty').style.display = 'none';
+  document.getElementById('panelContent').style.display = 'block';
+}
+
+function buildFilters(){
+  const af = document.getElementById('authorFilters'); const bf = document.getElementById('branchFilters');
+  af.innerHTML=''; bf.innerHTML='';
+  activeAuthors = new Set(data.authors.map(a=>a.id));
+  activeBranches = new Set((data.repo.branches||[]).map(b=>b.name));
+  data.authors.forEach(a => { const lab=document.createElement('label'); lab.innerHTML=`<input type="checkbox" checked data-kind="author" value="${a.id}"> ${escapeHtml(a.name)}`; af.appendChild(lab); });
+  (data.repo.branches||[]).forEach(b => { const lab=document.createElement('label'); lab.innerHTML=`<input type="checkbox" checked data-kind="branch" value="${b.name}"> ${escapeHtml(b.name)}`; bf.appendChild(lab); });
+  document.querySelectorAll('#filters input').forEach(inp => inp.addEventListener('change', () => { const v=inp.value, kind=inp.dataset.kind; if (kind==='author'){ inp.checked?activeAuthors.add(v):activeAuthors.delete(v); } else { inp.checked?activeBranches.add(v):activeBranches.delete(v); } render(); if (panelTab==='stats') showStats(); }));
+}
+
+document.getElementById('svg').addEventListener('click', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n) return; if (n.type==='commit') selectCommit(n.commit); else { n.collapsed=!n.collapsed; render(); } });
+const tip = document.getElementById('tooltip');
+document.getElementById('svg').addEventListener('mouseover', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n||!n.tip) return; tip.textContent=n.tip; tip.style.opacity='1'; });
+document.getElementById('svg').addEventListener('mousemove', e => { tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; });
+document.getElementById('svg').addEventListener('mouseout', () => { tip.style.opacity='0'; });
+document.getElementById('modeGroup').addEventListener('click', e => { const b=e.target.closest('button[data-mode]'); if(!b) return; mode=b.dataset.mode; document.querySelectorAll('#modeGroup button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); render(); });
+document.getElementById('expandAll').addEventListener('click', () => setAllCollapsed(false));
+document.getElementById('collapseAll').addEventListener('click', () => setAllCollapsed(true));
+function setAllCollapsed(v){ visible.forEach(n => { if (n.children && n.children.length) n.collapsed = v; }); render(); }
+document.getElementById('search').addEventListener('input', e => { searchTerm = e.target.value.trim().toLowerCase(); render(); });
+document.getElementById('fileInput').addEventListener('change', e => { const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ try { data=JSON.parse(r.result); selectedHash=null; buildFilters(); showStats(); render(); } catch(err){ alert('解析失败: '+err.message); } }; r.readAsText(f); });
+
+// ===== 统计面板（作者排行 / 活跃热力 / 趋势，与图谱筛选联动）=====
+let panelTab = 'stats';
+function visibleCommits(){ return data.commits.filter(commitPasses); }
+function syncFilterChecks(){
+  document.querySelectorAll('#filters input').forEach(inp => { inp.checked = (inp.dataset.kind==='author') ? activeAuthors.has(inp.value) : activeBranches.has(inp.value); });
+}
+function showStats(){
+  panelTab = 'stats';
+  document.querySelectorAll('#panelTabs button').forEach(b => b.classList.toggle('active', b.dataset.tab==='stats'));
+  const commits = visibleCommits();
+  // 作者排行
+  const amap = {};
+  for (const c of commits){ (amap[c.authorId] = amap[c.authorId] || []).push(c); }
+  const ranks = Object.keys(amap).map(aid => ({ aid, name: authorName(aid), color: authorColor(aid), n: amap[aid].length })).sort((a,b)=> b.n - a.n);
+  const maxN = ranks.length ? ranks[0].n : 1;
+  const rankHtml = ranks.map(r => `
+    <div class="rank-row" data-aid="${escapeHtml(r.aid)}" title="点击切换该作者筛选">
+      <span class="rank-dot" style="background:${r.color}"></span>
+      <span class="rank-name">${escapeHtml(r.name)}</span>
+      <span class="rank-track"><span class="rank-fill" style="width:${(r.n/maxN*100).toFixed(1)}%;background:${r.color}"></span></span>
+      <span class="rank-count">${r.n} 次</span>
+    </div>`).join('');
+  // 活跃热力：近 26 周按天
+  const dayMap = {};
+  for (const c of commits){ const t = new Date(c.time); if (isNaN(t)) continue; dayMap[t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0')] = (dayMap[t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0')]||0)+1; }
+  let maxD = 1; for (const k in dayMap) maxD = Math.max(maxD, dayMap[k]);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const cells = [];
+  for (let i = 26*7 - 1; i >= 0; i--){
+    const d = new Date(today.getTime() - i*86400000);
+    const key = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    const n = dayMap[key] || 0;
+    cells.push(`<div class="heat-cell" style="background:${n ? 'rgba(78,121,167,'+(0.25+0.75*(n/maxD)).toFixed(2)+')' : '#eef0f3'}" title="${key} · ${n} 次提交"></div>`);
+  }
+  // 趋势：按月提交数
+  const mmap = {};
+  for (const c of commits){ const m = c.time.slice(0,7); mmap[m] = (mmap[m]||0)+1; }
+  const ms = Object.keys(mmap).sort();
+  const maxM = ms.length ? Math.max.apply(null, ms.map(m=>mmap[m])) : 1;
+  const trendHtml = ms.map(m => `<div class="trend-col" title="${m} · ${mmap[m]} 次提交"><div class="trend-bar" style="height:${(mmap[m]/maxM*100).toFixed(1)}%"></div><div class="trend-label">${escapeHtml(m)}</div></div>`).join('');
+  const el = document.getElementById('panelContent');
+  el.innerHTML = `
+    <div class="stat-block"><h3>作者排行（${ranks.length} 人 · ${commits.length} 次提交）</h3>${rankHtml || '<div class="kv">无匹配提交</div>'}</div>
+    <div class="stat-block"><h3>活跃热力（近 26 周 · 按天）</h3><div class="heat-grid">${cells.join('')}</div></div>
+    <div class="stat-block"><h3>提交趋势（按月）</h3>${ms.length ? `<div class="trend">${trendHtml}</div>` : '<div class="kv">无匹配提交</div>'}</div>`;
+  document.getElementById('panelEmpty').style.display = 'none';
+  el.style.display = 'block';
+}
+function showDetail(){
+  panelTab = 'detail';
+  document.querySelectorAll('#panelTabs button').forEach(b => b.classList.toggle('active', b.dataset.tab==='detail'));
+  const c = selectedHash ? data.commits.find(x => x.hash === selectedHash) : null;
+  if (c){ renderDetail(c); } else { document.getElementById('panelContent').style.display = 'none'; document.getElementById('panelEmpty').style.display = 'block'; }
+}
+document.getElementById('panelTabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (!b) return; b.dataset.tab === 'stats' ? showStats() : showDetail(); });
+document.getElementById('panelContent').addEventListener('click', e => {
+  const row = e.target.closest('.rank-row'); if (!row) return;
+  const aid = row.dataset.aid;
+  if (activeAuthors.has(aid)) activeAuthors.delete(aid); else activeAuthors.add(aid);
+  syncFilterChecks(); render(); showStats();
+});
+
+buildFilters();
+document.getElementById('canvasWrap').addEventListener('scroll', () => render());
+showStats();
+render();
+</script>
+</body>
+</html>

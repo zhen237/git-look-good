@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Git 提交图谱 · 启动器</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #222; background: #f5f6f8; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 46px 24px 60px; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: #667; font-size: 13px; margin: 0 0 26px; }
+  .cards { display: flex; gap: 16px; flex-wrap: wrap; }
+  .card { flex: 1 1 300px; background: #fff; border: 1px solid #e2e4e8; border-radius: 14px; padding: 20px; cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+  .card:hover { border-color: #4E79A7; box-shadow: 0 3px 10px rgba(78,121,167,.12); }
+  .card h2 { font-size: 15px; font-weight: 500; margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+  .card p { font-size: 12.5px; color: #667; margin: 0 0 12px; line-height: 1.55; }
+  .ic { display: inline-flex; width: 26px; height: 26px; border-radius: 7px; align-items: center; justify-content: center; color: #fff; font-size: 13px; flex: none; }
+  .ic.f { background: #4E79A7; } .ic.u { background: #59A14F; }
+  .urlrow { display: flex; gap: 8px; }
+  #url { flex: 1; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid #cbd2dc; border-radius: 8px; min-width: 0; }
+  #go { font: inherit; font-size: 13px; padding: 8px 14px; border: 1px solid #59A14F; background: #59A14F; color: #fff; border-radius: 8px; cursor: pointer; }
+  #go:hover { background: #4d8c42; }
+  #go:disabled, .card.busy { opacity: .55; pointer-events: none; }
+  .opt { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #556; margin: 14px 0 4px; }
+  #status { margin-top: 18px; font-size: 13px; min-height: 22px; color: #667; white-space: pre-wrap; }
+  #status.err { color: #c0392b; }
+  #status.ok { color: #1d9e75; }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #d8dce3; border-top-color: #4E79A7; border-radius: 50%; animation: sp .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .recent { margin-top: 30px; }
+  .recent h3 { font-size: 13px; font-weight: 500; color: #445; margin: 0 0 10px; }
+  .rrow { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #e6e8ec; border-radius: 9px; padding: 9px 12px; margin-bottom: 7px; cursor: pointer; font-size: 13px; }
+  .rrow:hover { border-color: #4E79A7; }
+  .rname { font-weight: 500; }
+  .rurl { color: #99a; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rtime { color: #aaa; font-size: 11.5px; margin-left: auto; flex: none; }
+  .empty { color: #aab; font-size: 12.5px; }
+  /* 克隆进度 */
+  .clonetxt { display: flex; gap: 8px; font-size: 12px; color: #556; margin-bottom: 6px; }
+  .bar { height: 8px; background: #eef0f3; border-radius: 5px; overflow: hidden; }
+  #cloneFill { height: 100%; background: #4E79A7; border-radius: 5px; transition: width .25s; }
+  #cloneCancel { margin-top: 9px; font: inherit; font-size: 12px; padding: 4px 12px; border: 1px solid #d96c6c; background: #fff; color: #c0392b; border-radius: 6px; cursor: pointer; }
+  #cloneCancel:hover { background: #fdf0f0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Git 提交图谱</h1>
+  <p class="sub">选择本机仓库，或粘贴 GitHub 地址自动克隆 —— 生成可视化提交历史图谱</p>
+
+  <div class="cards">
+    <div class="card" id="cardFolder" title="选择本机任意 Git 仓库目录">
+      <h2><span class="ic f">文</span>本地仓库文件夹</h2>
+      <p>选择/拖拽本机任意 Git 仓库目录，读取提交历史生成图谱。</p>
+      <span style="font-size:12px;color:#4E79A7">点击选择文件夹 →</span>
+    </div>
+    <div class="card" id="cardUrl" title="输入 GitHub 仓库地址，自动克隆后生成图谱">
+      <h2><span class="ic u">G</span>GitHub 仓库地址</h2>
+      <p>粘贴仓库地址（如 https://github.com/user/repo），自动 git clone 后生成图谱。</p>
+      <div class="urlrow">
+        <input id="url" placeholder="https://github.com/user/repo" spellcheck="false">
+        <button id="go">克隆并查看</button>
+      </div>
+      <div id="cloneBox" style="display:none;margin-top:12px">
+        <div class="clonetxt"><span id="cloneStage">克隆中</span><span id="clonePct" style="margin-left:auto">0%</span></div>
+        <div class="bar"><div id="cloneFill" style="width:0%"></div></div>
+        <button id="cloneCancel" class="cancel">取消克隆</button>
+      </div>
+    </div>
+  </div>
+
+  <label class="opt"><input type="checkbox" id="incDiff" checked> 包含完整 diff（点击提交可看逐行代码改动；超大仓库会变慢、文件变大）</label>
+
+  <div id="status"></div>
+
+  <div class="recent">
+    <h3>最近打开的仓库</h3>
+    <div id="recents"><div class="empty">暂无记录 —— 打开一个仓库后会出现在这里</div></div>
+  </div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  let busy = false;
+
+  // 容错：浏览器直接打开 launcher.html 时没有 preload API，明确提示双击 GitGraph.exe
+  if (!window.gitGraphAPI) {
+    $('status').className = 'err';
+    $('status').innerHTML = '当前不是软件运行环境（缺少主进程支持）。请到 <code style="background:#fee;padding:1px 5px;border-radius:3px">D:\\workbuddy\\git\\git-graph\\desktop\\dist\\GitGraph-win32-x64</code> 双击 <b>GitGraph.exe</b> 启动桌面应用。';
+    $('cardFolder').classList.add('busy');
+    $('cardFolder').title = '请双击 GitGraph.exe 启动';
+    $('go').disabled = true;
+    $('url').disabled = true;
+  }
+
+  function setBusy(b, msg){
+    busy = b;
+    const st = $('status');
+    st.className = b ? '' : st.className;
+    st.innerHTML = b ? '<span class="spin"></span>' + msg : '';
+    $('cardFolder').classList.toggle('busy', b);
+    $('go').disabled = b;
+  }
+  function showErr(m){ const st = $('status'); st.className = 'err'; st.textContent = '出错了：' + m; }
+  function showOk(m){ const st = $('status'); st.className = 'ok'; st.textContent = m; }
+  function incDiff(){ return $('incDiff').checked; }
+
+  async function runScan(repoPath, label){
+    if (busy) return;
+    setBusy(true, '正在扫描 ' + label + ' …');
+    const r = await window.gitGraphAPI.scanRepo(repoPath, incDiff());
+    setBusy(false);
+    if (r && r.ok){ showOk('已生成 ' + r.name + ' 的图谱（' + r.commits + ' 提交）'); loadRecents(); }
+    else showErr((r && r.error) || '未知错误');
+  }
+
+  $('cardFolder').addEventListener('click', async () => {
+    if (busy) return;
+    const p = await window.gitGraphAPI.pickFolder();
+    if (p) runScan(p, p);
+  });
+
+  $('go').addEventListener('click', async () => {
+    const url = $('url').value.trim();
+    if (!url){ showErr('请先粘贴 GitHub 仓库地址'); return; }
+    if (busy) return;
+    setBusy(true, '正在启动克隆…');
+    const r = await window.gitGraphAPI.cloneRepoStart(url, incDiff());
+    setBusy(false);
+    if (r && r.ok && r.started){ showCloneBox(); }
+    else if (r && r.ok && r.reused){ showOk('仓库已存在，正在生成图谱…'); }
+    else showErr((r && r.error) || '启动克隆失败');
+  });
+  $('url').addEventListener('keydown', e => { if (e.key === 'Enter') $('go').click(); });
+
+  // 克隆进度 / 完成 / 取消
+  function showCloneBox(){
+    $('cloneBox').style.display = 'block';
+    $('cloneFill').style.width = '0%';
+    $('clonePct').textContent = '0%';
+    $('cloneStage').textContent = '克隆中';
+    $('go').disabled = true;
+  }
+  function hideCloneBox(){ $('cloneBox').style.display = 'none'; $('go').disabled = false; }
+  window.gitGraphAPI.onCloneProgress(res => {
+    if (!res) return;
+    const pct = res.pct || 0;
+    $('cloneFill').style.width = pct + '%';
+    $('clonePct').textContent = pct + '%';
+    $('cloneStage').textContent = res.stage || '克隆中';
+  });
+  window.gitGraphAPI.onCloneDone(res => {
+    hideCloneBox();
+    if (res && res.ok){ showOk('已生成 ' + res.name + ' 的图谱（' + res.commits + ' 提交）'); loadRecents(); }
+    else showErr((res && res.error) || '克隆失败，请检查地址与网络');
+  });
+  $('cloneCancel').addEventListener('click', async () => {
+    await window.gitGraphAPI.cloneCancel();
+    showErr('已取消克隆');
+    hideCloneBox();
+  });
+
+  function fmtTime(t){
+    if (!t) return '';
+    const d = new Date(t), now = new Date();
+    const diff = (now - d) / 1000;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+    if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+    return Math.floor(diff / 86400) + ' 天前';
+  }
+  async function loadRecents(){
+    const list = await window.gitGraphAPI.getRecents();
+    const box = $('recents');
+    if (!list || !list.length){ box.innerHTML = '<div class="empty">暂无记录 —— 打开一个仓库后会出现在这里</div>'; return; }
+    box.innerHTML = list.map(r => `
+      <div class="rrow" data-path="${r.path}">
+        <span class="rname">${r.name}</span>
+        <span class="rurl">${r.url || r.path}</span>
+        <span class="rtime">${fmtTime(r.time)}</span>
+      </div>`).join('');
+    box.querySelectorAll('.rrow').forEach(el => el.addEventListener('click', () => runScan(el.dataset.path, el.querySelector('.rname').textContent)));
+  }
+
+  loadRecents();
+</script>
+</body>
+</html>
