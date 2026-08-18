@@ -52,7 +52,8 @@
   .lane { fill: none; stroke: #b7c0cc; stroke-width: 3; }
   .commit-rect { rx: 6; }
   .conn { fill: none; stroke: #aab3bf; stroke-width: 2.5; stroke-linecap: round; }
-  .conn.hl { stroke: #E8554E; stroke-width: 3.5; opacity: 1; }
+  .conn.jump { stroke-width: 1.8; stroke-dasharray: 6 5; opacity: 0.75; }
+  .conn.hl { stroke: #E8554E; stroke-width: 3.5; opacity: 1; stroke-dasharray: none; }
   .conn.dim, .node.dim { opacity: 0.16; }
   .branch-label { font-size: 11px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
   .commit-label { font-size: 9px; fill: #9aa2ad; text-anchor: middle; pointer-events: none; }
@@ -436,12 +437,14 @@ function buildLanes(){
     nodes.push({ id:'c'+c.hash, type:'commit', label:c.hash.slice(0,7), color:L.colorHex[c.hash], commit:c, _x:x, _y:y, parentHashes:c.parents.slice() });
   }
   // 父→子 连线：同泳道直线，跨泳道曲线；颜色取子提交所在泳道色（分支着色）
+  const JUMP_STEPS = 5; // 跨越多于 5 个时间步的连线视为长距离跳跃
   for (const c of data.commits){
     const a = pos[c.hash];
     for (const ph of c.parents){
       const b = pos[ph]; if (!b) continue;
       const curve = (L.rel[c.hash] !== L.rel[ph]);
-      connectors.push({ x1:b.x, y1:b.y, x2:a.x, y2:a.y, curve, toHash:c.hash, color:L.colorHex[c.hash] });
+      const longJump = Math.abs(a.x - b.x) > JUMP_STEPS * STEP;
+      connectors.push({ x1:b.x, y1:b.y, x2:a.x, y2:a.y, curve, longJump, toHash:c.hash, color:L.colorHex[c.hash] });
     }
   }
   // 仓库节点 + 连线到最旧提交（xRank 0）
@@ -580,11 +583,21 @@ function render(){
   if (mode === 'E'){
     for (const c of viewConn){
       const on = hlCommits ? hlCommits.has(c.toHash) : false;
-      const cls = 'conn' + (c.curve?' curve':'') + (hlCommits ? (on?' hl':' dim') : '');
-      const stroke = on ? '#E8554E' : c.color;
-      connSvg += c.curve
-        ? (function(){ const dx = Math.max(8, Math.min(40, Math.abs(c.x2 - c.x1) * 0.4)); return `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} C${c.x1+dx},${c.y1} ${c.x2-dx},${c.y2} ${c.x2},${c.y2}"/>`; })()
-        : `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} L${c.x2},${c.y2}"/>`;
+      const cls = 'conn' + (c.curve?' curve':'') + (c.longJump?' jump':'') + (hlCommits ? (on?' hl':' dim') : '');
+      const stroke = on ? '#E8554E' : (c.longJump ? '#c6cbd4' : c.color);
+      if (c.curve){
+        if (c.longJump){
+          // 长距离跨 lane：桥形虚线，先水平出、再斜向目标 lane、再水平进，避免长斜线贯穿画面
+          const dx = Math.max(8, Math.min(28, Math.abs(c.x2 - c.x1) * 0.12));
+          const midX = (c.x1 + c.x2) / 2;
+          connSvg += `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} C${c.x1+dx},${c.y1} ${midX},${c.y1} ${midX},${(c.y1+c.y2)/2} S${c.x2-dx},${c.y2} ${c.x2},${c.y2}"/>`;
+        } else {
+          const dx = Math.max(8, Math.min(40, Math.abs(c.x2 - c.x1) * 0.4));
+          connSvg += `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} C${c.x1+dx},${c.y1} ${c.x2-dx},${c.y2} ${c.x2},${c.y2}"/>`;
+        }
+      } else {
+        connSvg += `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} L${c.x2},${c.y2}"/>`;
+      }
     }
   } else {
     connSvg = viewLinks.map(l => `<path class="link" d="${l.d}"/>`).join('');
