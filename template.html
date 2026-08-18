@@ -7,15 +7,18 @@
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #222; background: #f5f6f8; }
+  body { display: flex; flex-direction: column; }
   #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; background: #fff; border-bottom: 1px solid #e2e4e8; }
   #toolbar strong { font-size: 15px; }
   .mode-group button, #toolbar button, .filebtn { font: inherit; font-size: 13px; padding: 5px 10px; border: 1px solid #cbd2dc; background: #fff; border-radius: 7px; cursor: pointer; }
   .mode-group button.active { background: #4E79A7; color: #fff; border-color: #4E79A7; }
   #search { font: inherit; font-size: 13px; padding: 5px 9px; border: 1px solid #cbd2dc; border-radius: 7px; width: 200px; }
   .filebtn { display: inline-block; }
-  #filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 14px; background: #fafbfc; border-bottom: 1px solid #eef0f3; font-size: 12px; color: #555; }
-  #filters label { margin-right: 4px; }
-  #main { display: flex; height: calc(100% - 96px); }
+  #filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 14px; background: #fafbfc; border-bottom: 1px solid #eef0f3; font-size: 12px; color: #555; max-height: 118px; overflow-y: auto; flex-shrink: 0; }
+  #filters label { margin-right: 3px; display: inline-flex; align-items: center; gap: 3px; padding: 1px 5px; border-radius: 4px; background: #f0f2f5; cursor: pointer; white-space: nowrap; }
+  #filters label:hover { background: #e5e9ef; }
+  #filters input[type=checkbox] { margin: 0; }
+  #main { display: flex; flex: 1; min-height: 0; }
   #canvasWrap { flex: 1; overflow: auto; position: relative; background: #fff; }
   #svg { display: block; }
   #panel { width: 380px; border-left: 1px solid #e2e4e8; background: #fafbfc; overflow: auto; padding: 14px; }

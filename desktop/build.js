@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // 构建脚本：把 data.json 嵌入 template.html，产出单文件可双击打开的 git-graph.html
-// CLI:  node build.js [dataJsonPath]
+// CLI:  node build.js [dataJsonPath] [outHtmlPath]
 // 模块: const { build } = require('./build.js'); build(dataJsonPath, outHtmlPath)
 const fs = require('fs');
 const path = require('path');
@@ -30,10 +30,12 @@ function build(dataPath, outPath) {
 module.exports = { build };
 
 // ---- CLI 入口 ----
+// 用法: node build.js [dataJsonPath] [outHtmlPath]
 if (require.main === module) {
   const dataPath = process.argv[2] || path.join(__dirname, 'data.json');
+  const outPath = process.argv[3] || path.join(__dirname, 'git-graph.html');
   try {
-    const r = build(dataPath);
+    const r = build(dataPath, outPath);
     console.log('已生成:', r.out, '  嵌入提交数:', r.commits, ' 大小:', r.sizeKB + ' KB');
   } catch (e) {
     console.error('错误：' + e.message);
