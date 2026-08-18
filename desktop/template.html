@@ -439,7 +439,7 @@ function buildLanes(){
     nodes.push({ id:'c'+c.hash, type:'commit', label:c.hash.slice(0,7), color:L.colorHex[c.hash], commit:c, _x:x, _y:y, parentHashes:c.parents.slice() });
   }
   // 父→子 连线：同泳道直线，跨泳道曲线；颜色取子提交所在泳道色（分支着色）
-  const JUMP_STEPS = 5; // 跨越多于 5 个时间步的连线视为长距离跳跃
+  const JUMP_STEPS = 1; // 跨越多于 1 个时间步的连线即视为长距离跳跃（默认隐藏，避免长竖线/斜线）
   for (const c of data.commits){
     const a = pos[c.hash];
     for (const ph of c.parents){
