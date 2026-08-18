@@ -588,10 +588,13 @@ function render(){
   }
   currentModel = model;
   const svg = document.getElementById('svg');
+  // 关键：只用 viewBox + width/height 控制缩放，不要在 zoomLayer 上再叠加 scale()，
+  // 否则会「双重缩放」（用户坐标 × scale²），大仓库 fit 到 0.08 时内容被缩到 0.0064，
+  // 全挤在左上角，而首屏滚动按单倍 scale 定位 → 滚到空白区 → 看似"不显示"。
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('width', width * zoomState.scale);
   svg.setAttribute('height', height * zoomState.scale);
-  svg.innerHTML = `<g id="zoomLayer" transform="scale(${zoomState.scale})">${axisSvg}${connSvg}${nodesSvg}</g>`;
+  svg.innerHTML = `<g id="zoomLayer">${axisSvg}${connSvg}${nodesSvg}</g>`;
 }
 
 function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
