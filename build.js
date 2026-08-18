@@ -17,7 +17,12 @@ function build(dataPath, outPath) {
   if (!tpl.includes('__DATA__')) {
     throw new Error('模板缺少 __DATA__ 占位符: ' + tplPath);
   }
-  tpl = tpl.replace('__DATA__', JSON.stringify(data).replace(/<\/script>/gi, '<\\/script>'));
+  // 关键修复：第二个参数必须是「函数」而不是字符串。
+  // 若直接传 JSON.stringify(data) 这个字符串，数据里一旦出现 $& / $` / $' / $1~$9
+  // 会被 String.replace 当作特殊替换标记解释（例如 $` 会把模板前缀整段注入数据，
+  // 其中包含换行等控制字符，导致 JSON.parse 报 "Bad control character"、整文件 JS 语法错误）。
+  // 用 replacer 函数返回，返回值一律按字面量插入，彻底规避该坑。
+  tpl = tpl.replace('__DATA__', () => JSON.stringify(data).replace(/<\/script>/gi, '<\\/script>'));
   fs.writeFileSync(outPath, tpl);
   return { out: outPath, commits: data.commits.length, sizeKB: (fs.statSync(outPath).size / 1024).toFixed(1) };
 }

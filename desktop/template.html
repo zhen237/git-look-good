@@ -40,7 +40,9 @@
   #tooltip { position: fixed; pointer-events: none; background: #222; color: #fff; font-size: 12px; padding: 6px 9px; border-radius: 6px; opacity: 0; transition: opacity .1s; max-width: 320px; z-index: 10; white-space: pre-line; line-height: 1.5; }
   .chip { display: inline-block; padding: 2px 8px; border-radius: 10px; color: #fff; font-size: 12px; }
   .tag { display:inline-block; background:#eef1f5; color:#556; border-radius:5px; padding:1px 7px; font-size:11px; margin:2px 3px 2px 0; }
-  .file-row { display:flex; justify-content:space-between; font-size:12px; padding:3px 0; border-bottom:1px dashed #eef0f3; }
+  .file-row { display:flex; justify-content:space-between; gap:8px; font-size:12px; padding:3px 0; border-bottom:1px dashed #eef0f3; }
+  .file-row > span:first-child { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .add, .file-row .del { font-family: ui-monospace, Menlo, Consolas, monospace; flex: none; }
   .add { color:#1d9e75; } .del { color:#e24b4a; }
   pre.diff { background:#fff; border:1px solid #eef0f3; border-radius:6px; padding:8px; font-size:11.5px; line-height:1.45; overflow:auto; max-height:300px; font-family: ui-monospace, Menlo, Consolas, monospace; }
   pre.diff .add { background:#eafaf3; display:block; }
@@ -70,6 +72,18 @@
   .trend-col { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; min-width:0; height:100%; justify-content:flex-end; }
   .trend-bar { width:100%; background:#4E79A7; border-radius:2px 2px 0 0; min-height:2px; }
   .trend-label { font-size:9px; color:#98a0ad; writing-mode:vertical-rl; text-orientation:mixed; max-height:38px; overflow:hidden; }
+  /* 缩放控件 */
+  .zoom-controls { display:inline-flex; align-items:center; gap:4px; margin-left:8px; padding:2px 6px; border:1px solid #cbd2dc; border-radius:7px; background:#fff; }
+  .zoom-controls button { font:inherit; font-size:13px; padding:2px 8px; border:1px solid #cbd2dc; background:#fff; border-radius:5px; cursor:pointer; line-height:1.2; }
+  .zoom-controls button:hover { background:#eef2f7; }
+  .zoom-controls #zoomLevel { font-size:12px; color:#555; min-width:42px; text-align:center; }
+  /* 画布滚动条 + 拖拽平移 */
+  #canvasWrap { cursor: grab; }
+  #canvasWrap.dragging { cursor: grabbing; }
+  #canvasWrap::-webkit-scrollbar { width: 12px; height: 12px; }
+  #canvasWrap::-webkit-scrollbar-thumb { background: #c2c9d4; border-radius: 6px; border: 2px solid #fff; }
+  #canvasWrap::-webkit-scrollbar-thumb:hover { background: #a9b2c0; }
+  #canvasWrap::-webkit-scrollbar-track { background: #f2f4f7; }
 </style>
 </head>
 <body>
@@ -85,7 +99,28 @@
   <button id="expandAll">展开全部</button>
   <button id="collapseAll">折叠全部</button>
   <input id="search" placeholder="搜索 提交/hash/作者">
-  <label class="filebtn">加载 data.json<input id="fileInput" type="file" accept=".json" style="display:none"></label>
+  <span class="zoom-controls" title="Ctrl+滚轮缩放 / F 适配 / 0 重置">
+    <button id="zoomOut" title="缩小 (-)">−</button>
+    <span id="zoomLevel">100%</span>
+    <button id="zoomIn" title="放大 (+)">+</button>
+    <button id="zoomFit" title="适应窗口 (F)">适应</button>
+    <button id="zoomReset" title="重置 100% (0)">1×</button>
+  </span>
+  <label class="filebtn" title="独立版：打开已生成的 data.json 切换仓库">打开数据文件<input id="fileInput" type="file" accept=".json" style="display:none"></label>
+  <button id="ggSwitchRepo" title="切换仓库：exe 返回启动器 / 独立版打开数据文件">切换仓库</button>
+  <button id="ggRefresh" title="重新扫描当前仓库（exe）/ 重绘（独立版）">刷新</button>
+  <span class="zoom-controls" title="导出当前视图">
+    <span style="font-size:12px;color:#555">导出</span>
+    <button id="btnExportSvg">SVG</button>
+    <button id="btnExportPng">PNG</button>
+    <button id="btnExportJson">JSON</button>
+  </span>
+  <select id="axisGran" title="时间轴刻度粒度（分支拓扑模式生效）" style="padding:5px 8px;border:1px solid #cbd2dc;border-radius:7px;background:#fff;font:inherit;font-size:13px;cursor:pointer">
+    <option value="month">月刻度</option>
+    <option value="year">年刻度</option>
+    <option value="week">周刻度</option>
+  </select>
+  <button id="btnHelp" title="快捷键与操作说明">?</button>
 </div>
 <div id="filters">
   <span>作者:</span><span id="authorFilters"></span>
@@ -103,19 +138,51 @@
   </div>
 </div>
 <div id="tooltip"></div>
+<div id="sampledBanner" style="display:none; position:fixed; top:66px; left:50%; transform:translateX(-50%); background:#fff4e5; border:1px solid #f0c896; color:#8a5a1e; padding:6px 12px; border-radius:8px; font-size:12px; z-index:15;"></div>
+<div id="helpOverlay" style="display:none; position:fixed; inset:0; background:rgba(20,24,30,.45); z-index:20; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:12px; padding:22px 26px; max-width:480px; width:90%; box-shadow:0 10px 40px rgba(0,0,0,.25);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <strong style="font-size:16px">操作说明</strong>
+      <button id="helpClose" style="border:none;background:none;font-size:20px;line-height:1;cursor:pointer;color:#888" title="关闭">×</button>
+    </div>
+    <div style="font-size:13px;color:#444;line-height:1.95">
+      <div><b>缩放</b>：Ctrl + 滚轮，或工具栏 − / +；<b>适应窗口</b>：按 F 或「适应」；<b>重置 100%</b>：按 0</div>
+      <div><b>平移</b>：在画布上按住左键 / 中键拖动</div>
+      <div><b>筛选</b>：顶部「作者 / 分支」勾选框，或在统计面板点击作者行</div>
+      <div><b>搜索</b>：顶部搜索框（提交 / hash / 作者），实时高亮</div>
+      <div><b>详情</b>：点击提交节点 → 右侧看文件清单与逐行 diff</div>
+      <div><b>模式</b>：分支拓扑(E) / 仓→分支→作者(A) / 仓→作者(B) / 作者→仓(C) / 时间线(D)</div>
+      <div><b>导出</b>：工具栏 SVG / PNG / JSON（导出当前视图）</div>
+      <div><b>切换 / 刷新</b>：exe 下返回启动器或重新扫描；独立版打开 data.json 或重绘</div>
+    </div>
+  </div>
+</div>
 
 <script>
 const DATA = __DATA__;
 
 let data = DATA;
+const VALID_MODES = ['A','B','C','D','E'];
 let mode = 'E';
 let searchTerm = '';
 let activeAuthors = new Set();
 let activeBranches = new Set();
 let selectedHash = null;
+let zoomState = { scale: 1 };
+let currentModel = null;
 let nodeMap = {};
 let nodeSeq = 0;
 let visible = [];
+let axisGran = 'month';
+
+// ===== 偏好持久化（localStorage）=====
+const LS = {
+  get(k, d){ try { const v = localStorage.getItem('gg_' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v){ try { localStorage.setItem('gg_' + k, JSON.stringify(v)); } catch (e) {} }
+};
+axisGran = LS.get('axisGran', 'month');
+if (!['year','month','week'].includes(axisGran)) axisGran = 'month';
+{ const m = LS.get('mode', 'E'); if (VALID_MODES.includes(m)) mode = m; }
 
 const NODE_W = 168, NODE_H = 26, X_GAP = 210, LEAF_GAP = 34, TOP = 46;
 
@@ -187,13 +254,19 @@ function layout(root){
   assign(root, 0, null);
   return leaf;
 }
+// 树模型缓存：模式/搜索/筛选未变时复用布局（折叠展开由调用方显式清缓存）
+let treeCache = null;
 function buildTreeModel(){
+  const key = [mode, searchTerm, [...activeAuthors].sort().join(','), [...activeBranches].sort().join(',')].join('|');
+  if (treeCache && treeCache.key === key && treeCache.data === data) return treeCache.model;
   const root = buildTree();
   const leaves = layout(root);
   const links = [];
-  for (const n of visible){ if (n._parent){ const px = n._parent._x + (n._parent.type==='commit'?NODE_W:150), py = n._parent._y, x=n._x, y=n._y, mx=(px+x)/2; links.push(`<path class="link" d="M${px},${py} C${mx},${py} ${mx},${y} ${x},${y}"/>`); } }
+  for (const n of visible){ if (n._parent){ const px = n._parent._x + (n._parent.type==='commit'?NODE_W:150), py = n._parent._y, x=n._x, y=n._y, mx=(px+x)/2; links.push({ x1:px, y1:py, x2:x, y2:y, d:`M${px},${py} C${mx},${py} ${mx},${y} ${x},${y}` }); } }
   let maxX = 0; for (const n of visible) maxX = Math.max(maxX, n._x + (n.type==='commit'?NODE_W:150));
-  return { nodes: visible, links, laneLines: [], width: maxX+60, height: TOP + leaves*LEAF_GAP + 30 };
+  const model = { nodes: visible, links, laneLines: [], width: maxX+60, height: TOP + leaves*LEAF_GAP + 30 };
+  treeCache = { key, data, model };
+  return model;
 }
 
 // ===== 泳道(列)分配算法：移植自 tclh123/commits-graph（git 原生图算法）=====
@@ -264,15 +337,26 @@ function buildLanes(){
     if (b.name === main) continue;
     const hh = headOf[b.name], hp = pos[hh]; if (!hh || !hp) continue;
     const k = usedAt[hh] || 0; usedAt[hh] = k + 1;
-    nodes.push({ id:'bl'+(labelSeq++), type:'branchlabel', label:b.name, color:L.colorHex[hh], _x:hp.x + k*96, _y:hp.y - 27, _anchor:'middle', tip:`分支 ${b.name}\n头提交 ${hh.slice(0,7)}` });
+    const shortName = b.name.length > 16 ? b.name.slice(0, 16) + '…' : b.name;
+    nodes.push({ id:'bl'+(labelSeq++), type:'branchlabel', label:shortName, color:L.colorHex[hh], _x:hp.x + k*96, _y:hp.y - 27, _anchor:'middle', tip:`分支 ${b.name}\n头提交 ${hh.slice(0,7)}` });
   }
   let maxX = STARTX + (data.commits.length-1)*STEP;
   let maxRel = 0; for (const c of data.commits) maxRel = Math.max(maxRel, Math.abs(L.rel[c.hash]));
   return { nodes, connectors, width: maxX+100, height: MAINY + (maxRel+1)*LANE_GAP + 60 };
 }
 
+// 布局缓存：数据/模式不变时复用泳道布局（滚动、缩放、选中只重渲染不重算拓扑）
+let layoutCache = null, layoutCacheKey = '';
 function render(){
-  const model = (mode === 'E') ? buildLanes() : buildTreeModel();
+  let model;
+  if (mode === 'E'){
+    if (!layoutCache || layoutCacheKey !== 'E' || layoutCache.data !== data){
+      layoutCache = buildLanes(); layoutCacheKey = 'E'; layoutCache.data = data;
+    }
+    model = layoutCache;
+  } else {
+    model = buildTreeModel();
+  }
   nodeMap = {}; model.nodes.forEach(n => nodeMap[n.id] = n);
   const { width, height, connectors, links } = model;
   // 选中提交时，高亮其祖先链路（仓库→主干→分支→该提交）
@@ -294,19 +378,29 @@ function render(){
       const frac = (d.getTime() - tmin) / (tmax - tmin || 1);
       const x = 20 + frac * (width - 40);
       axisSvg += `<line class="axis" x1="${x}" y1="${axY-4}" x2="${x}" y2="${axY+4}"/>`;
-      axisSvg += `<text class="axis-label" x="${x}" y="${axY-7}" text-anchor="middle">${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}</text>`;
-      d.setMonth(d.getMonth() + 1);
+      let label;
+      if (axisGran === 'year') label = String(d.getFullYear());
+      else if (axisGran === 'week') label = String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+      else label = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+      axisSvg += `<text class="axis-label" x="${x}" y="${axY-7}" text-anchor="middle">${label}</text>`;
+      if (axisGran === 'year') d.setFullYear(d.getFullYear() + 1);
+      else if (axisGran === 'week') d.setDate(d.getDate() + 14);
+      else d.setMonth(d.getMonth() + 1);
     }
     if (selectedHash){ const c = data.commits.find(x => x.hash === selectedHash); if (c){ const frac = (new Date(c.time).getTime() - tmin)/(tmax - tmin || 1); const x = 20 + frac*(width-40); axisSvg += `<line class="axis-marker" x1="${x}" y1="${axY-9}" x2="${x}" y2="${axY+9}" stroke="#E8554E" stroke-width="2"/>`; } }
   }
 
   // 视口裁剪（虚拟化）：仅渲染可见区域附近的元素，应对大仓库
   const canvasWrap = document.getElementById('canvasWrap');
-  let viewNodes = model.nodes, viewConn = (mode==='E' ? (model.connectors||[]) : null);
-  if (mode === 'E' && canvasWrap){
+  let viewNodes = model.nodes, viewConn = (mode==='E' ? (model.connectors||[]) : null), viewLinks = (mode!=='E' ? (model.links||[]) : null);
+  if (canvasWrap){
     const sl = canvasWrap.scrollLeft, st = canvasWrap.scrollTop, cw = canvasWrap.clientWidth, ch = canvasWrap.clientHeight, M = 400;
-    const inView = (x,y)=> (x > sl-M && x < sl+cw+M && y > st-M && y < st+ch+M);
-    viewConn = (model.connectors||[]).filter(c=> inView((c.x1+c.x2)/2,(c.y1+c.y2)/2));
+    const inView = (x,y)=> (x*zoomState.scale > sl-M && x*zoomState.scale < sl+cw+M && y*zoomState.scale > st-M && y*zoomState.scale < st+ch+M);
+    if (mode === 'E'){
+      viewConn = (model.connectors||[]).filter(c=> inView((c.x1+c.x2)/2,(c.y1+c.y2)/2));
+    } else {
+      viewLinks = (model.links||[]).filter(l=> inView((l.x1+l.x2)/2,(l.y1+l.y2)/2));
+    }
     viewNodes = model.nodes.filter(n=> n.type==='repo' || inView(n._x, n._y));
   }
   let connSvg = '';
@@ -316,11 +410,11 @@ function render(){
       const cls = 'conn' + (c.curve?' curve':'') + (hlCommits ? (on?' hl':' dim') : '');
       const stroke = on ? '#E8554E' : c.color;
       connSvg += c.curve
-        ? `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} C${c.x1},${(c.y1+c.y2)/2} ${c.x2},${(c.y1+c.y2)/2} ${c.x2},${c.y2}"/>`
+        ? (function(){ const dx = Math.max(8, Math.min(40, Math.abs(c.x2 - c.x1) * 0.4)); return `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} C${c.x1+dx},${c.y1} ${c.x2-dx},${c.y2} ${c.x2},${c.y2}"/>`; })()
         : `<path class="${cls}" style="stroke:${stroke}" d="M${c.x1},${c.y1} L${c.x2},${c.y2}"/>`;
     }
   } else {
-    connSvg = (links||[]).join('');
+    connSvg = viewLinks.map(l => `<path class="link" d="${l.d}"/>`).join('');
   }
   let nodesSvg = '';
   for (const n of viewNodes){
@@ -341,10 +435,12 @@ function render(){
       nodesSvg += `<g class="${cls}" data-nodeid="${n.id}">${rect}<text x="${n._x+10}" y="${n._y+1}" fill="#fff">${escapeHtml(label)}</text></g>`;
     }
   }
-  document.getElementById('svg').setAttribute('viewBox', `0 0 ${width} ${height}`);
-  document.getElementById('svg').setAttribute('width', width);
-  document.getElementById('svg').setAttribute('height', height);
-  document.getElementById('svg').innerHTML = axisSvg + connSvg + nodesSvg;
+  currentModel = model;
+  const svg = document.getElementById('svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', width * zoomState.scale);
+  svg.setAttribute('height', height * zoomState.scale);
+  svg.innerHTML = `<g id="zoomLayer" transform="scale(${zoomState.scale})">${axisSvg}${connSvg}${nodesSvg}</g>`;
 }
 
 function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -381,18 +477,19 @@ function buildFilters(){
   activeBranches = new Set((data.repo.branches||[]).map(b=>b.name));
   data.authors.forEach(a => { const lab=document.createElement('label'); lab.innerHTML=`<input type="checkbox" checked data-kind="author" value="${a.id}"> ${escapeHtml(a.name)}`; af.appendChild(lab); });
   (data.repo.branches||[]).forEach(b => { const lab=document.createElement('label'); lab.innerHTML=`<input type="checkbox" checked data-kind="branch" value="${b.name}"> ${escapeHtml(b.name)}`; bf.appendChild(lab); });
-  document.querySelectorAll('#filters input').forEach(inp => inp.addEventListener('change', () => { const v=inp.value, kind=inp.dataset.kind; if (kind==='author'){ inp.checked?activeAuthors.add(v):activeAuthors.delete(v); } else { inp.checked?activeBranches.add(v):activeBranches.delete(v); } render(); if (panelTab==='stats') showStats(); }));
+  document.querySelectorAll('#filters input').forEach(inp => inp.addEventListener('change', () => { const v=inp.value, kind=inp.dataset.kind; if (kind==='author'){ inp.checked?activeAuthors.add(v):activeAuthors.delete(v); } else { inp.checked?activeBranches.add(v):activeBranches.delete(v); } saveFilters(); render(); if (panelTab==='stats') showStats(); }));
 }
 
-document.getElementById('svg').addEventListener('click', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n) return; if (n.type==='commit') selectCommit(n.commit); else { n.collapsed=!n.collapsed; render(); } });
+document.getElementById('svg').addEventListener('click', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n) return; if (n.type==='commit') selectCommit(n.commit); else { n.collapsed=!n.collapsed; treeCache=null; render(); } });
 const tip = document.getElementById('tooltip');
 document.getElementById('svg').addEventListener('mouseover', e => { const g=e.target.closest('[data-nodeid]'); if(!g) return; const n=nodeMap[g.dataset.nodeid]; if(!n||!n.tip) return; tip.textContent=n.tip; tip.style.opacity='1'; });
 document.getElementById('svg').addEventListener('mousemove', e => { tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; });
 document.getElementById('svg').addEventListener('mouseout', () => { tip.style.opacity='0'; });
-document.getElementById('modeGroup').addEventListener('click', e => { const b=e.target.closest('button[data-mode]'); if(!b) return; mode=b.dataset.mode; document.querySelectorAll('#modeGroup button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); render(); });
+document.getElementById('modeGroup').addEventListener('click', e => { const b=e.target.closest('button[data-mode]'); if(!b) return; mode=b.dataset.mode; LS.set('mode', mode); document.querySelectorAll('#modeGroup button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); render(); });
+function syncModeButtons(){ document.querySelectorAll('#modeGroup button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode)); }
 document.getElementById('expandAll').addEventListener('click', () => setAllCollapsed(false));
 document.getElementById('collapseAll').addEventListener('click', () => setAllCollapsed(true));
-function setAllCollapsed(v){ visible.forEach(n => { if (n.children && n.children.length) n.collapsed = v; }); render(); }
+function setAllCollapsed(v){ visible.forEach(n => { if (n.children && n.children.length) n.collapsed = v; }); treeCache=null; render(); }
 document.getElementById('search').addEventListener('input', e => { searchTerm = e.target.value.trim().toLowerCase(); render(); });
 document.getElementById('fileInput').addEventListener('change', e => { const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ try { data=JSON.parse(r.result); selectedHash=null; buildFilters(); showStats(); render(); } catch(err){ alert('解析失败: '+err.message); } }; r.readAsText(f); });
 
@@ -401,6 +498,13 @@ let panelTab = 'stats';
 function visibleCommits(){ return data.commits.filter(commitPasses); }
 function syncFilterChecks(){
   document.querySelectorAll('#filters input').forEach(inp => { inp.checked = (inp.dataset.kind==='author') ? activeAuthors.has(inp.value) : activeBranches.has(inp.value); });
+}
+function saveFilters(){ LS.set('authors', [...activeAuthors]); LS.set('branches', [...activeBranches]); }
+function applyPersistedFilters(){
+  const sa = LS.get('authors', null), sb = LS.get('branches', null);
+  if (Array.isArray(sa)){ const set = new Set(sa); activeAuthors = new Set([...activeAuthors].filter(x => set.has(x))); }
+  if (Array.isArray(sb)){ const set = new Set(sb); activeBranches = new Set([...activeBranches].filter(x => set.has(x))); }
+  syncFilterChecks();
 }
 function showStats(){
   panelTab = 'stats';
@@ -455,13 +559,146 @@ document.getElementById('panelContent').addEventListener('click', e => {
   const row = e.target.closest('.rank-row'); if (!row) return;
   const aid = row.dataset.aid;
   if (activeAuthors.has(aid)) activeAuthors.delete(aid); else activeAuthors.add(aid);
-  syncFilterChecks(); render(); showStats();
+  syncFilterChecks(); saveFilters(); render(); showStats();
 });
 
+// ===== 缩放（toolbar 按钮 / Ctrl+滚轮 / 键盘快捷键） =====
+function applyZoom(s){
+  s = Math.max(0.15, Math.min(4, s));
+  zoomState.scale = s;
+  const lvl = document.getElementById('zoomLevel'); if (lvl) lvl.textContent = Math.round(s*100)+'%';
+  LS.set('scale', s);
+  render();
+}
+function applyInitialView(){
+  const s = LS.get('scale', null);
+  if (typeof s === 'number' && s > 0) applyZoom(s); else zoomFit();
+}
+function zoomFit(){
+  if (!currentModel){ applyZoom(1); return; }
+  const wrap = document.getElementById('canvasWrap');
+  const cw = (wrap.clientWidth || 0) - 40, ch = (wrap.clientHeight || 0) - 60;
+  const s = Math.max(0.15, Math.min(1, Math.min(cw/currentModel.width, ch/currentModel.height)));
+  applyZoom(isFinite(s) && s > 0 ? s : 1);
+}
+document.getElementById('zoomIn').addEventListener('click', () => applyZoom(zoomState.scale * 1.25));
+document.getElementById('zoomOut').addEventListener('click', () => applyZoom(zoomState.scale / 1.25));
+document.getElementById('zoomReset').addEventListener('click', () => applyZoom(1));
+document.getElementById('zoomFit').addEventListener('click', zoomFit);
+document.getElementById('canvasWrap').addEventListener('wheel', e => {
+  if (e.ctrlKey || e.metaKey){ e.preventDefault(); applyZoom(zoomState.scale * (e.deltaY > 0 ? 0.9 : 1.111)); }
+}, { passive: false });
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey){
+    if (e.key === '=' || e.key === '+'){ e.preventDefault(); applyZoom(zoomState.scale * 1.2); }
+    else if (e.key === '-' || e.key === '_'){ e.preventDefault(); applyZoom(zoomState.scale / 1.2); }
+    else if (e.key === '0'){ e.preventDefault(); applyZoom(1); }
+  } else if (e.key === 'f' || e.key === 'F'){
+    if (e.target && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA'){ e.preventDefault(); zoomFit(); }
+  }
+});
+
+// ===== 拖拽平移视口（左键/中键按住拖动；拖拽过则吞掉后续 click，轻点仍可选中节点） =====
+let drag = null, dragWas = false;
+const cwEl = document.getElementById('canvasWrap');
+cwEl.addEventListener('mousedown', e => {
+  if (e.button !== 0 && e.button !== 1) return;
+  drag = { x: e.clientX, y: e.clientY, sl: cwEl.scrollLeft, st: cwEl.scrollTop, moved: false };
+  if (e.button === 1) e.preventDefault();           // 阻止中键自动滚动
+  cwEl.classList.add('dragging');
+});
+document.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (!drag.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) drag.moved = true;
+  if (drag.moved){ cwEl.scrollLeft = drag.sl - dx; cwEl.scrollTop = drag.st - dy; }
+});
+document.addEventListener('mouseup', () => {
+  if (drag && drag.moved) dragWas = true;
+  drag = null; cwEl.classList.remove('dragging');
+});
+cwEl.addEventListener('click', e => { if (dragWas){ e.stopPropagation(); e.preventDefault(); dragWas = false; } }, true);
+
 buildFilters();
-document.getElementById('canvasWrap').addEventListener('scroll', () => render());
+const raf = (window.requestAnimationFrame || (cb => cb())).bind(window);
+let scrollRaf = null;
+document.getElementById('canvasWrap').addEventListener('scroll', () => {
+  if (scrollRaf) return;
+  scrollRaf = raf(() => { scrollRaf = null; render(); });
+});
+
+// ===== 导出（SVG / PNG / JSON，纯浏览器内实现）=====
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 120);
+}
+function buildSvgString(){
+  const svg = document.getElementById('svg');
+  const clone = svg.cloneNode(true);
+  const zl = clone.querySelector('#zoomLayer');
+  if (zl) zl.removeAttribute('transform');        // 1:1 导出，去掉缩放层
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  clone.setAttribute('width', currentModel.width);
+  clone.setAttribute('height', currentModel.height);
+  clone.setAttribute('viewBox', '0 0 ' + currentModel.width + ' ' + currentModel.height);
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
+}
+function exportJson(){ downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), (data.repo.name || 'git-graph') + '-data.json'); }
+function exportSvg(){ downloadBlob(new Blob([buildSvgString()], { type: 'image/svg+xml' }), (data.repo.name || 'git-graph') + '-graph.svg'); }
+function exportPng(){
+  const svgStr = buildSvgString();
+  const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const img = new Image();
+  const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  img.onload = function(){
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(currentModel.width * scale));
+    canvas.height = Math.max(1, Math.round(currentModel.height * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(b => { if (b) downloadBlob(b, (data.repo.name || 'git-graph') + '-graph.png'); }, 'image/png');
+  };
+  img.onerror = function(){ URL.revokeObjectURL(url); alert('PNG 导出失败（SVG 渲染异常），可改用 SVG 导出'); };
+  img.src = url;
+}
+document.getElementById('btnExportJson').addEventListener('click', exportJson);
+document.getElementById('btnExportSvg').addEventListener('click', exportSvg);
+document.getElementById('btnExportPng').addEventListener('click', exportPng);
+
+// ===== 切换仓库 / 刷新 / 帮助 / 时间粒度 =====
+document.getElementById('ggSwitchRepo').addEventListener('click', () => {
+  if (window.gitGraphAPI && window.gitGraphAPI.openLauncher) window.gitGraphAPI.openLauncher();
+  else { const fi = document.getElementById('fileInput'); if (fi) fi.click(); }
+});
+document.getElementById('ggRefresh').addEventListener('click', () => {
+  if (window.gitGraphAPI && window.gitGraphAPI.refresh){ window.gitGraphAPI.refresh(); return; }
+  render(); if (panelTab === 'stats') showStats();
+});
+document.getElementById('btnHelp').addEventListener('click', () => { document.getElementById('helpOverlay').style.display = 'flex'; });
+document.getElementById('helpClose').addEventListener('click', () => { document.getElementById('helpOverlay').style.display = 'none'; });
+document.getElementById('helpOverlay').addEventListener('click', e => { if (e.target.id === 'helpOverlay') document.getElementById('helpOverlay').style.display = 'none'; });
+document.getElementById('axisGran').value = axisGran;
+document.getElementById('axisGran').addEventListener('change', e => { axisGran = e.target.value; LS.set('axisGran', axisGran); if (mode === 'E') render(); });
+
+// 超大仓库抽样提示（scan.js 设 data.repo.sampled）
+if (data.repo && data.repo.sampled){
+  const b = document.getElementById('sampledBanner');
+  b.textContent = '已抽样：仅显示 ' + data.repo.sampled.kept + ' / ' + data.repo.sampled.total + ' 次提交（可用 GITGRAPH_MAX 调整上限）';
+  b.style.display = 'block';
+}
+
+// ===== 初始化：恢复偏好 + 首屏视图 =====
+syncModeButtons();
+applyPersistedFilters();
 showStats();
 render();
+applyInitialView();
 </script>
 </body>
 </html>

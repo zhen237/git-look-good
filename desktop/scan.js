@@ -12,6 +12,8 @@ const path = require('path');
 
 function scan(repo, out) {
   repo = path.resolve(repo);
+  // 智能剥离结尾的 "/.git" 或 "\.git"（用户常误把 .git 当成仓库根）
+  if (/[\\\/]\.git$/i.test(repo)) repo = path.dirname(repo);
   if (!fs.existsSync(path.join(repo, '.git'))) {
     throw new Error('不是 Git 仓库（未找到 .git）: ' + repo);
   }
@@ -61,7 +63,7 @@ function scan(repo, out) {
     throw new Error('git log 失败: ' + e.message);
   }
 
-  const commits = [];
+  let commits = [];
   let cur = null;
   const numRe = /^(\d+|-)\t(\d+|-)\t(.*)$/;
   for (const line of raw.split('\n')) {
@@ -94,40 +96,94 @@ function scan(repo, out) {
   }
   if (cur) commits.push(cur);
 
+  // 3.6) 超大仓库抽样（P2-9）：保留全部合并提交以维护拓扑，非合并提交均匀抽样
+  let sampled = null;
+  const MAX = parseInt(process.env.GITGRAPH_MAX || '0', 10);
+  if (MAX > 0 && commits.length > MAX) {
+    const originalLen = commits.length;
+    const merges = commits.filter(c => c.parents.length > 1);
+    const singles = commits.filter(c => c.parents.length === 1);
+    let picked;
+    if (merges.length >= MAX) {
+      picked = merges.slice(0, MAX);
+    } else {
+      const keep = MAX - merges.length;
+      const step = singles.length / keep;
+      picked = merges.slice();
+      for (let i = 0; i < keep; i++) picked.push(singles[Math.min(singles.length - 1, Math.floor(i * step))]);
+    }
+    const keepSet = new Set(picked.map(c => c.hash));
+    commits = commits.filter(c => keepSet.has(c.hash));
+    sampled = { total: originalLen, kept: commits.length };
+  }
+
   // 3.5) 抓取每个提交的 diff patch（完整档）；合并提交跳过以省体积
-  for (const c of commits) {
+  //      静默 stderr：某些仓库里有二进制文件时 PortableGit 的 astextplain 会刷屏
+  //      环境变量 GITGRAPH_LITE=1 可跳过抓 patch（出图快、HTML 小，但点击提交只能看文件清单看不到 diff）
+  const LITE = !!process.env.GITGRAPH_LITE;
+  if (!LITE) for (const c of commits) {
     if (c.parents.length > 1) { c.patch = ''; continue; }
     try {
-      c.patch = git(['show', '--format=', '--no-color', '--patch', c.hash]).replace(/^\n+/, '');
+      c.patch = execFileSync('git', ['show', '--format=', '--no-color', '--patch', c.hash], {
+        cwd: repo, encoding: 'utf8', maxBuffer: 1024 * 1024 * 256,
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).replace(/^\n+/, '');
     } catch (e) {
       c.patch = '';
     }
   }
 
-  // 4) 作者聚合 + 配色（基准：A. 活泼彩色，循环取色）
-  const authorsMap = new Map();
-  const authorOrder = [];
+  // 4) 作者聚合 + 配色 + 多邮箱/改名去重（P1-6）
+  //    第一步：按小写邮箱归组（同名不同拼写并入同邮箱）
+  const emailGroups = new Map(); // lowerEmail -> { email, names:Map, commitCount, _min, _max }
   for (const c of commits) {
-    const ae = c.authorId;
-    if (!authorsMap.has(ae)) {
-      authorsMap.set(ae, { id: ae, name: c.authorName, email: ae, commitCount: 0, _min: c.time, _max: c.time });
-      authorOrder.push(ae);
-    }
-    const a = authorsMap.get(ae);
-    a.commitCount++;
-    if (c.time < a._min) a._min = c.time;
-    if (c.time > a._max) a._max = c.time;
+    const le = c.authorId.toLowerCase();
+    if (!emailGroups.has(le)) emailGroups.set(le, { email: c.authorId, names: new Map(), commitCount: 0, _min: c.time, _max: c.time });
+    const g = emailGroups.get(le);
+    g.commitCount++;
+    if (c.time < g._min) g._min = c.time;
+    if (c.time > g._max) g._max = c.time;
+    const nm = c.authorName || '';
+    g.names.set(nm, (g.names.get(nm) || 0) + 1);
   }
+  // 第二步：按规范化名字合并不同邮箱（同名视为同一人，记录别名）；无名则仅按邮箱
+  const norm = s => (s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const personMap = new Map(); // key -> { groups:[lowerEmail] }
+  for (const [le, g] of emailGroups) {
+    const nn = norm([...g.names.keys()][0] || '');
+    const key = nn || ('__email__' + le);
+    if (!personMap.has(key)) personMap.set(key, { groups: [] });
+    personMap.get(key).groups.push(le);
+  }
+  // 第三步：组装 authors（canon = 提交最多的邮箱；名字 = 出现最多的拼写；aliases = 其余邮箱）
   const palette = ['#4E79A7', '#F28E2B', '#59A14F', '#E15759', '#B07AA1', '#76B7B2', '#EDC948', '#FF9DA7'];
-  const authors = authorOrder.map((email, i) => {
-    const a = authorsMap.get(email);
-    return {
-      id: a.id, name: a.name, email: a.email,
-      color: palette[i % palette.length],
-      commitCount: a.commitCount,
-      activeStart: a._min, activeEnd: a._max
-    };
-  });
+  const authors = [];
+  let pi = 0;
+  const emailToCanon = new Map();
+  for (const [, p] of personMap) {
+    let bestLe = p.groups[0], bestN = -1;
+    for (const le of p.groups) { const n = emailGroups.get(le).commitCount; if (n > bestN) { bestN = n; bestLe = le; } }
+    const canon = emailGroups.get(bestLe);
+    let bestName = '', bestNameN = -1;
+    for (const [nm, n] of canon.names) { if (n > bestNameN) { bestNameN = n; bestName = nm; } }
+    const aliases = p.groups.map(le => emailGroups.get(le).email).filter(e => e !== canon.email);
+    authors.push({
+      id: canon.email, name: bestName, email: canon.email,
+      color: palette[pi % palette.length],
+      commitCount: p.groups.reduce((s, le) => s + emailGroups.get(le).commitCount, 0),
+      activeStart: Math.min(...p.groups.map(le => emailGroups.get(le)._min)),
+      activeEnd: Math.max(...p.groups.map(le => emailGroups.get(le)._max)),
+      aliases: aliases.length ? aliases : undefined
+    });
+    pi++;
+    for (const le of p.groups) emailToCanon.set(le, canon.email);
+  }
+  // 第四步：提交 authorId / authorName 改写为规范作者
+  const nameById = new Map(authors.map(a => [a.id, a.name]));
+  for (const c of commits) {
+    const canon = emailToCanon.get(c.authorId.toLowerCase());
+    if (canon) { c.authorId = canon; c.authorName = nameById.get(canon) || c.authorName; }
+  }
 
   // 5) 各分支提交数
   const branchCounts = {};
@@ -152,7 +208,8 @@ function scan(repo, out) {
       defaultBranch,
       branches: branchInfo,
       commitCount: commits.length,
-      authorCount: authors.length
+      authorCount: authors.length,
+      sampled: sampled
     },
     authors,
     commits
